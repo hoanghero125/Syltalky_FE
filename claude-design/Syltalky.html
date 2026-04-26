@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Syltalky</title>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body, #root { width: 100%; height: 100%; overflow: hidden; }
+  body { font-family: 'Poppins', sans-serif; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+  input::placeholder, textarea::placeholder { color: #555870; }
+  select option { background: #141720; color: #E8EAF0; }
+  @media (max-width: 600px) { .auth-left { display: none !important; } }
+  @keyframes fadeSlideIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+  .screen-enter { animation: fadeSlideIn 0.22s ease both; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script>window.AppContext = React.createContext(null);</script>
+
+<script src="components/state.js"></script>
+<script type="text/babel" src="components/icons.jsx"></script>
+<script type="text/babel" src="components/auth.jsx"></script>
+<script type="text/babel" src="components/sidebar.jsx"></script>
+<script type="text/babel" src="components/home.jsx"></script>
+<script type="text/babel" src="components/library.jsx"></script>
+<script type="text/babel" src="components/settings.jsx"></script>
+<script type="text/babel" src="components/overlays.jsx"></script>
+<script type="text/babel" src="components/meeting.jsx"></script>
+
+<script type="text/babel">
+const { useReducer } = React;
+
+const INIT = {
+  isAuth: false,
+  authScreen: 'login',
+  currentScreen: 'home',
+  openFile: null,
+  sidebarOpen: true,
+  theme: 'dark',
+  language: 'vi',
+  user: { name: 'Nguyễn Văn A', email: 'user@syltalky.com', avatar: null },
+  notes: window.MOCK_NOTES ? [...window.MOCK_NOTES] : [],
+  trash: window.MOCK_TRASH ? [...window.MOCK_TRASH] : [],
+  settings: { micVolume: 75, speakerVolume: 80, fontSize: 18, fontFamily: 'Poppins' },
+  overlays: { search: false, settings: false },
+  meetingPhase: null,
+};
+
+function reducer(state, action) {
+  switch (action.type) {
+    case 'LOGIN':   return { ...state, isAuth: true, currentScreen: 'home' };
+    case 'LOGOUT':  return { ...INIT };
+    case 'GO_REGISTER': return { ...state, authScreen: 'register' };
+    case 'GO_LOGIN':    return { ...state, authScreen: 'login' };
+    case 'NAV':     return { ...state, currentScreen: action.screen, openFile: null };
+    case 'OPEN_FILE': return { ...state, openFile: action.file, overlays: { ...state.overlays, search: false } };
+    case 'CLOSE_FILE': return { ...state, openFile: null };
+    case 'TOGGLE_SIDEBAR': return { ...state, sidebarOpen: !state.sidebarOpen };
+    case 'SET_THEME':   return { ...state, theme: action.theme };
+    case 'SET_LANG':    return { ...state, language: action.language };
+    case 'SET_AVATAR':  return { ...state, user: { ...state.user, avatar: action.avatar } };
+    case 'SET_NAME':    return { ...state, user: { ...state.user, name: action.name } };
+    case 'SET_SETTING': return { ...state, settings: { ...state.settings, [action.key]: action.val } };
+    case 'TOGGLE_STAR': {
+      const notes = state.notes.map(n => n.id===action.id ? {...n, starred:!n.starred} : n);
+      const openFile = state.openFile?.id===action.id ? {...state.openFile, starred:!state.openFile.starred} : state.openFile;
+      return { ...state, notes, openFile };
+    }
+    case 'DELETE_NOTE': {
+      const note = state.notes.find(n=>n.id===action.id);
+      if (!note) return state;
+      const trashItem = { id:note.id, name:note.name, type:note.type, deletedAt:'26/04/2026', creator:note.creator };
+      return { ...state, notes: state.notes.map(n=>n.id===action.id?{...n,deleted:true}:n), trash:[trashItem,...state.trash] };
+    }
+    case 'RESTORE_TRASH': return { ...state, trash:state.trash.filter(t=>t.id!==action.id), notes:state.notes.map(n=>n.id===action.id?{...n,deleted:false}:n) };
+    case 'DELETE_PERM':   return { ...state, trash:state.trash.filter(t=>t.id!==action.id), notes:state.notes.filter(n=>n.id!==action.id) };
+    case 'OVERLAY': return { ...state, overlays: { ...state.overlays, [action.overlay]: action.val } };
+    case 'MEETING': return { ...state, meetingPhase: action.phase };
+    default: return state;
+  }
+}
+
+// Auth screens are loaded from components/auth.jsx → LoginScreen / RegisterScreen on window
+
+/* ── App Layout ── */
+function AppLayout({ state, dispatch }) {
+  const { language:lang, theme, currentScreen, openFile, sidebarOpen, meetingPhase, overlays } = state;
+  const isDark = theme === 'dark';
+  const bg = isDark ? '#0C0E14' : '#F5F6FA';
+
+  const screenMap = {
+    home:    openFile ? <FileDetailScreen file={openFile} onBack={()=>dispatch({type:'CLOSE_FILE'})} appState={state} dispatch={dispatch}/> : <HomeScreen appState={state} dispatch={dispatch}/>,
+    library: openFile ? <FileDetailScreen file={openFile} onBack={()=>dispatch({type:'CLOSE_FILE'})} appState={state} dispatch={dispatch}/> : <LibraryScreen appState={state} dispatch={dispatch}/>,
+  };
+
+  return (
+    <div style={{ width:'100vw',height:'100vh',display:'flex',background:bg,overflow:'hidden',position:'relative' }}>
+      {sidebarOpen ? <Sidebar appState={state} dispatch={dispatch}/> : <SidebarToggle dispatch={dispatch} theme={theme}/>}
+
+      <div key={currentScreen+(openFile?.id||'')} className="screen-enter" style={{ flex:1,display:'flex',flexDirection:'column',overflow:'hidden',minWidth:0 }}>
+        {screenMap[currentScreen] || screenMap.home}
+      </div>
+
+      {/* Overlays */}
+      {overlays.search   && <SearchOverlay appState={state} dispatch={dispatch}/>}
+      {overlays.settings && <SettingsModal  appState={state} dispatch={dispatch}/>}
+
+      {/* Meeting flow */}
+      {meetingPhase==='precheck' && <DeviceCheck   lang={lang} theme={theme} onReady={()=>dispatch({type:'MEETING',phase:'tips'})}    onClose={()=>dispatch({type:'MEETING',phase:null})}/>}
+      {meetingPhase==='tips'     && <MeetingTips   lang={lang} theme={theme} onStart={()=>dispatch({type:'MEETING',phase:'active'})}  onBack={()=>dispatch({type:'MEETING',phase:'precheck'})}/>}
+      {meetingPhase==='active'   && <MeetingWindow lang={lang} theme={theme} onEnd={()=>dispatch({type:'MEETING',phase:'summary'})}/>}
+      {meetingPhase==='summary'  && <SummaryPopup  lang={lang} theme={theme} onView={()=>{dispatch({type:'MEETING',phase:null});dispatch({type:'NAV',screen:'library'});}} onLater={()=>dispatch({type:'MEETING',phase:null})}/>}
+    </div>
+  );
+}
+
+/* ── Root ── */
+function App() {
+  const [state, dispatch] = useReducer(reducer, INIT);
+
+  if (!state.isAuth) {
+    return state.authScreen === 'login'
+      ? <LoginScreen  lang={state.language} onLogin={()=>dispatch({type:'LOGIN'})}    onGoRegister={()=>dispatch({type:'GO_REGISTER'})}/>
+      : <RegisterScreen lang={state.language} onRegister={()=>dispatch({type:'LOGIN'})} onGoLogin={()=>dispatch({type:'GO_LOGIN'})}/>;
+  }
+
+  return (
+    <window.AppContext.Provider value={{state,dispatch}}>
+      <AppLayout state={state} dispatch={dispatch}/>
+    </window.AppContext.Provider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
