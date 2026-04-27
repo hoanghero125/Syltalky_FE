@@ -5,7 +5,7 @@ import AuthLeft from './AuthLeft'
 
 export default function RegisterScreen() {
   const navigate = useNavigate()
-  const [form, setForm] = useState({ email: '', display_name: '', gender: 'female', password: '', confirm: '' })
+  const [form, setForm] = useState({ email: '', display_name: '', gender: '', password: '', confirm: '' })
   const [showPass, setShowPass] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -15,6 +15,7 @@ export default function RegisterScreen() {
   const submit = async (e) => {
     e.preventDefault()
     setError('')
+    if (!form.gender) { setError('Vui lòng chọn giới tính'); return }
     if (form.password !== form.confirm) { setError('Mật khẩu xác nhận không khớp'); return }
     setLoading(true)
     try {
@@ -45,7 +46,7 @@ export default function RegisterScreen() {
           </h2>
 
           <Field label="Email" type="email" value={form.email} onChange={set('email')} placeholder="email@example.com" autoFocus />
-          <Field label="Tên hiển thị" type="text" value={form.display_name} onChange={set('display_name')} placeholder="Nguyễn Văn A" />
+          <Field label="Tên hiển thị" type="text" value={form.display_name} onChange={set('display_name')} placeholder="Phạm Đỗ Hồ Đoãng" autoComplete="username" />
 
           {/* Gender toggle */}
           <div style={{ marginBottom: 24 }}>
@@ -53,7 +54,7 @@ export default function RegisterScreen() {
               Giới tính
             </label>
             <div style={{ display: 'flex', gap: 10 }}>
-              {[{ value: 'female', label: 'Nữ' }, { value: 'male', label: 'Nam' }].map(opt => (
+              {[{ value: 'male', label: 'Nam' }, { value: 'female', label: 'Nữ' }].map(opt => (
                 <button key={opt.value} type="button" onClick={() => set('gender')(opt.value)} style={{
                   flex: 1, padding: '10px', borderRadius: 9, border: `1.5px solid ${form.gender === opt.value ? '#00C9B8' : 'rgba(255,255,255,0.15)'}`,
                   background: form.gender === opt.value ? 'rgba(0,201,184,0.12)' : 'transparent',
@@ -67,8 +68,8 @@ export default function RegisterScreen() {
           </div>
 
           <Field label="Mật khẩu" type={showPass ? 'text' : 'password'} value={form.password} onChange={set('password')} placeholder="••••••••"
-            showToggle onToggle={() => setShowPass(s => !s)} showPass={showPass} />
-          <Field label="Xác nhận mật khẩu" type={showPass ? 'text' : 'password'} value={form.confirm} onChange={set('confirm')} placeholder="••••••••" />
+            showToggle onToggle={() => setShowPass(s => !s)} showPass={showPass} autoComplete="new-password" />
+          <Field label="Xác nhận mật khẩu" type={showPass ? 'text' : 'password'} value={form.confirm} onChange={set('confirm')} placeholder="••••••••" autoComplete="new-password" />
 
           {error && <p style={{ color: '#F87171', fontSize: 13, marginBottom: 16 }}>{error}</p>}
 
@@ -88,14 +89,14 @@ export default function RegisterScreen() {
   )
 }
 
-function Field({ label, type, value, onChange, placeholder, autoFocus, showToggle, onToggle, showPass }) {
+function Field({ label, type, value, onChange, placeholder, autoFocus, showToggle, onToggle, showPass, autoComplete }) {
   return (
     <div style={{ marginBottom: 24 }}>
       <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'rgba(255,255,255,0.4)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>
         {label}
       </label>
       <div style={{ position: 'relative' }}>
-        <input autoFocus={autoFocus} type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} required
+        <input autoFocus={autoFocus} type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} required autoComplete={autoComplete}
           style={{ width: '100%', padding: showToggle ? '13px 42px 13px 0' : '13px 0', background: 'transparent', border: 'none', borderBottom: '1.5px solid rgba(255,255,255,0.2)', color: '#fff', fontSize: 15, outline: 'none', transition: 'border-color 0.2s' }}
           onFocus={e => e.target.style.borderBottomColor = '#00C9B8'}
           onBlur={e => e.target.style.borderBottomColor = 'rgba(255,255,255,0.2)'}

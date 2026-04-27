@@ -41,9 +41,9 @@ export default function LoginScreen() {
             Đăng nhập
           </h2>
 
-          <Field label="Email" type="email" value={email} onChange={setEmail} placeholder="email@example.com" autoFocus />
-          <Field label="Mật khẩu" type={showPass ? 'text' : 'password'} value={password} onChange={setPassword} placeholder="••••••••"
-            showToggle onToggle={() => setShowPass(s => !s)} showPass={showPass} />
+          <Field label="Email" type="email" value={email} onChange={setEmail} autoComplete="email" autoFocus />
+          <Field label="Mật khẩu" type={showPass ? 'text' : 'password'} value={password} onChange={setPassword}
+            autoComplete="current-password" showToggle onToggle={() => setShowPass(s => !s)} showPass={showPass} />
 
           <div style={{ textAlign: 'right', marginBottom: 28, marginTop: -8 }}>
             <Link to="/forgot-password" style={{ fontSize: 12, color: '#00C9B8', textDecoration: 'none' }}>
@@ -69,7 +69,7 @@ export default function LoginScreen() {
   )
 }
 
-function Field({ label, type, value, onChange, placeholder, autoFocus, showToggle, onToggle, showPass }) {
+function Field({ label, type, value, onChange, autoComplete, autoFocus, showToggle, onToggle, showPass }) {
   return (
     <div style={{ marginBottom: 24 }}>
       <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'rgba(255,255,255,0.4)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>
@@ -81,7 +81,7 @@ function Field({ label, type, value, onChange, placeholder, autoFocus, showToggl
           type={type}
           value={value}
           onChange={e => onChange(e.target.value)}
-          placeholder={placeholder}
+          autoComplete={autoComplete}
           required
           style={{
             width: '100%', padding: showToggle ? '13px 42px 13px 0' : '13px 0',

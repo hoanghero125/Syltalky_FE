@@ -8,12 +8,16 @@ const useStore = create(
       accessToken: null,
       theme: 'dark',
       language: 'vi',
+      subtitleSize: 'medium',
+      subtitleFont: 'system',
       notifications: [],
 
       setUser: (user) => set({ user }),
       setTokens: (accessToken) => set({ accessToken }),
       setTheme: (theme) => set({ theme }),
       setLanguage: (language) => set({ language }),
+      setSubtitleSize: (subtitleSize) => set({ subtitleSize }),
+      setSubtitleFont: (subtitleFont) => set({ subtitleFont }),
 
       addNotification: (notification) =>
         set((state) => ({ notifications: [notification, ...state.notifications] })),
@@ -34,6 +38,8 @@ const useStore = create(
         accessToken: state.accessToken,
         theme: state.theme,
         language: state.language,
+        subtitleSize: state.subtitleSize,
+        subtitleFont: state.subtitleFont,
       }),
     }
   )
