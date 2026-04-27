@@ -49,6 +49,7 @@ export default function Sidebar({ onSettings }) {
   const location  = useLocation()
   const navigate  = useNavigate()
   const { user, notifications, logout } = useStore()
+  const [confirmLogout, setConfirmLogout] = useState(false)
   const [joinMode, setJoinMode] = useState(false)
   const [code, setCode]         = useState('')
 
@@ -61,6 +62,7 @@ export default function Sidebar({ onSettings }) {
   }
 
   const handleLogout = () => { logout(); navigate('/login') }
+
 
   const avatarLetter = user?.display_name?.[0]?.toUpperCase() ?? '?'
 
@@ -204,9 +206,9 @@ export default function Sidebar({ onSettings }) {
           {/* Avatar */}
           <div style={{
             width: 30, height: 30, borderRadius: '50%', flexShrink: 0,
-            background: user?.avatar_url
-              ? `url(${user.avatar_url}) center/cover`
-              : 'linear-gradient(135deg, #00C9B8, #0099CC)',
+            ...(user?.avatar_url
+              ? { backgroundImage: `url(${user.avatar_url})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }
+              : { background: 'linear-gradient(135deg, #00C9B8, #0099CC)' }),
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: 12, fontWeight: 700, color: '#fff',
           }}>
@@ -232,7 +234,7 @@ export default function Sidebar({ onSettings }) {
           </button>
 
           {/* Logout */}
-          <button onClick={handleLogout} title="Đăng xuất" style={{
+          <button onClick={() => setConfirmLogout(true)} title="Đăng xuất" style={{
             background: 'none', border: 'none', cursor: 'pointer',
             color: 'rgba(255,255,255,0.3)', padding: 4, borderRadius: 6,
             transition: 'color 0.15s',
@@ -244,6 +246,64 @@ export default function Sidebar({ onSettings }) {
           </button>
         </div>
       </div>
+
+      {confirmLogout && (
+        <div
+          onClick={() => setConfirmLogout(false)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 600,
+            background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(6px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontFamily: '"Be Vietnam Pro", sans-serif',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: 340, background: '#0F1117', borderRadius: 16,
+              border: '1px solid rgba(255,255,255,0.08)',
+              boxShadow: '0 32px 80px rgba(0,0,0,0.7)',
+              padding: '28px 28px 24px',
+              animation: 'modal-in 0.18s cubic-bezier(0.22,1,0.36,1)',
+            }}
+          >
+            <style>{`@keyframes modal-in { from { opacity:0; transform:scale(0.95) translateY(8px) } to { opacity:1; transform:scale(1) translateY(0) } }`}</style>
+            <div style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
+            </div>
+            <h3 style={{ margin: '0 0 6px', fontSize: 16, fontWeight: 700, color: '#fff' }}>Đăng xuất?</h3>
+            <p style={{ margin: '0 0 24px', fontSize: 13, color: 'rgba(255,255,255,0.4)', lineHeight: 1.6 }}>
+              Bạn sẽ cần đăng nhập lại để tiếp tục sử dụng tài khoản.
+            </p>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                onClick={() => setConfirmLogout(false)}
+                style={{
+                  flex: 1, padding: '10px', borderRadius: 9,
+                  border: '1px solid rgba(255,255,255,0.1)', background: 'transparent',
+                  color: 'rgba(255,255,255,0.5)', fontWeight: 600, fontSize: 14,
+                  cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.2)'; e.currentTarget.style.color = '#fff' }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'; e.currentTarget.style.color = 'rgba(255,255,255,0.5)' }}
+              >Huỷ</button>
+              <button
+                onClick={handleLogout}
+                style={{
+                  flex: 1, padding: '10px', borderRadius: 9,
+                  background: 'rgba(248,113,113,0.15)', color: '#F87171',
+                  fontWeight: 700, fontSize: 14, cursor: 'pointer', fontFamily: 'inherit',
+                  border: '1px solid rgba(248,113,113,0.25)', transition: 'all 0.15s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(248,113,113,0.25)' }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(248,113,113,0.15)' }}
+              >Đăng xuất</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

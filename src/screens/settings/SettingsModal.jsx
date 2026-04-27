@@ -90,13 +90,15 @@ export default function SettingsModal({ onClose }) {
           <div style={{ padding: '24px 16px 20px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <div style={{
-                width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
-                background: user?.avatar_url ? `url(${user.avatar_url}) center/cover no-repeat` : 'linear-gradient(135deg,#00C9B8,#0099CC)',
+                width: 38, height: 38, borderRadius: '50%', flexShrink: 0, overflow: 'hidden',
+                background: user?.avatar_url ? '#000' : 'linear-gradient(135deg,#00C9B8,#0099CC)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontSize: 15, fontWeight: 700, color: '#fff',
                 border: '1.5px solid rgba(255,255,255,0.1)',
               }}>
-                {!user?.avatar_url && avatarLetter}
+                {user?.avatar_url
+                  ? <img src={user.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                  : avatarLetter}
               </div>
               <div style={{ overflow: 'hidden' }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>

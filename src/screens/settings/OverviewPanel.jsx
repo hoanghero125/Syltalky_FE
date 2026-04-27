@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react'
 import { api } from '../../api/client'
 import useStore from '../../store'
+import AvatarCropper from '../../components/AvatarCropper'
 
 export default function OverviewPanel() {
   const { user, accessToken, setUser } = useStore()
@@ -10,13 +11,20 @@ export default function OverviewPanel() {
   const [error, setError]   = useState('')
   const [avatarPreview, setAvatarPreview] = useState(user?.avatar_url ?? null)
   const [avatarFile, setAvatarFile]       = useState(null)
+  const [cropSrc, setCropSrc]             = useState(null)
   const fileRef = useRef()
 
   const handleAvatarPick = (e) => {
     const file = e.target.files[0]
     if (!file) return
-    setAvatarFile(file)
-    setAvatarPreview(URL.createObjectURL(file))
+    setCropSrc(URL.createObjectURL(file))
+    fileRef.current.value = ''
+  }
+
+  const handleCropConfirm = (blob) => {
+    setCropSrc(null)
+    setAvatarFile(new File([blob], 'avatar.jpg', { type: 'image/jpeg' }))
+    setAvatarPreview(URL.createObjectURL(blob))
   }
 
   const handleRemoveAvatar = () => {
@@ -54,13 +62,15 @@ export default function OverviewPanel() {
           {/* Avatar */}
           <div style={{ position: 'relative', flexShrink: 0 }}>
             <div style={{
-              width: 80, height: 80, borderRadius: '50%',
-              background: avatarPreview ? `url(${avatarPreview}) center/cover no-repeat` : 'linear-gradient(135deg,#00C9B8,#0099CC)',
+              width: 80, height: 80, borderRadius: '50%', overflow: 'hidden',
+              background: avatarPreview ? '#000' : 'linear-gradient(135deg,#00C9B8,#0099CC)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontSize: 30, fontWeight: 700, color: '#fff',
-              border: '3px solid rgba(255,255,255,0.08)',
+              border: '3px solid rgba(255,255,255,0.08)', flexShrink: 0,
             }}>
-              {!avatarPreview && letter}
+              {avatarPreview
+                ? <img src={avatarPreview} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                : letter}
             </div>
             {avatarPreview && (
               <div style={{
@@ -133,6 +143,14 @@ export default function OverviewPanel() {
           {saving ? 'Đang lưu...' : success ? '✓ Đã lưu' : 'Lưu thay đổi'}
         </button>
       </div>
+
+      {cropSrc && (
+        <AvatarCropper
+          imageSrc={cropSrc}
+          onConfirm={handleCropConfirm}
+          onCancel={() => setCropSrc(null)}
+        />
+      )}
     </div>
   )
 }

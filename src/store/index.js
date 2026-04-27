@@ -6,6 +6,7 @@ const useStore = create(
     (set) => ({
       user: null,
       accessToken: null,
+      refreshToken: null,
       theme: 'dark',
       language: 'vi',
       subtitleSize: 'medium',
@@ -13,7 +14,7 @@ const useStore = create(
       notifications: [],
 
       setUser: (user) => set({ user }),
-      setTokens: (accessToken) => set({ accessToken }),
+      setTokens: (accessToken, refreshToken) => set({ accessToken, refreshToken }),
       setTheme: (theme) => set({ theme }),
       setLanguage: (language) => set({ language }),
       setSubtitleSize: (subtitleSize) => set({ subtitleSize }),
@@ -29,13 +30,14 @@ const useStore = create(
           ),
         })),
 
-      logout: () => set({ user: null, accessToken: null, notifications: [] }),
+      logout: () => set({ user: null, accessToken: null, refreshToken: null, notifications: [] }),
     }),
     {
       name: 'syltalky-store',
       partialize: (state) => ({
         user: state.user,
         accessToken: state.accessToken,
+        refreshToken: state.refreshToken,
         theme: state.theme,
         language: state.language,
         subtitleSize: state.subtitleSize,

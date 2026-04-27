@@ -2,14 +2,26 @@ import { useState, useEffect } from 'react'
 import { api } from '../../api/client'
 import useStore from '../../store'
 import { Section } from './OverviewPanel'
+import CloneTab from './CloneTab'
 
-const GENDER_TAGS = ['female', 'male', 'neutral']
-const AGE_TAGS    = ['child', 'teen', 'young adult', 'adult', 'elderly']
-const PITCH_TAGS  = ['low pitch', 'moderate pitch', 'high pitch']
-const SPEED_TAGS  = ['slow', 'moderate speed', 'fast']
+const GENDER_TAGS = ['female', 'male']
+const AGE_TAGS    = ['child', 'teenager', 'young adult', 'middle-aged', 'elderly']
+const PITCH_TAGS  = ['very low pitch', 'low pitch', 'moderate pitch', 'high pitch', 'very high pitch']
+const STYLE_TAGS  = ['whisper']
+const ACCENT_TAGS = ['american accent', 'british accent', 'australian accent', 'canadian accent', 'chinese accent', 'indian accent', 'japanese accent', 'korean accent', 'portuguese accent', 'russian accent']
+
+const VI_LABEL = {
+  'female': 'Nữ', 'male': 'Nam',
+  'child': 'Trẻ em', 'teenager': 'Thiếu niên', 'young adult': 'Người trẻ', 'middle-aged': 'Trung niên', 'elderly': 'Người cao tuổi',
+  'very low pitch': 'Rất trầm', 'low pitch': 'Trầm', 'moderate pitch': 'Vừa', 'high pitch': 'Cao', 'very high pitch': 'Rất cao',
+  'whisper': 'Thì thầm',
+  'american accent': 'Mỹ', 'british accent': 'Anh', 'australian accent': 'Úc', 'canadian accent': 'Canada',
+  'chinese accent': 'Trung Quốc', 'indian accent': 'Ấn Độ', 'japanese accent': 'Nhật', 'korean accent': 'Hàn',
+  'portuguese accent': 'Bồ Đào Nha', 'russian accent': 'Nga',
+}
 
 function buildInstruct(sel) {
-  return [sel.gender, sel.age, sel.pitch, sel.speed].filter(Boolean).join(', ')
+  return [sel.gender, sel.age, sel.pitch, sel.style, sel.accent].filter(Boolean).join(', ')
 }
 
 function parseInstruct(instruct) {
@@ -18,44 +30,75 @@ function parseInstruct(instruct) {
     gender: GENDER_TAGS.find(t => parts.includes(t)) ?? '',
     age:    AGE_TAGS.find(t => parts.includes(t)) ?? '',
     pitch:  PITCH_TAGS.find(t => parts.includes(t)) ?? '',
-    speed:  SPEED_TAGS.find(t => parts.includes(t)) ?? '',
+    style:  STYLE_TAGS.find(t => parts.includes(t)) ?? '',
+    accent: ACCENT_TAGS.find(t => parts.includes(t)) ?? '',
   }
 }
 
 export default function VoicePanel() {
   const { accessToken } = useStore()
-  const [mode, setMode]     = useState('design')
-  const [sel, setSel]       = useState({ gender: '', age: '', pitch: '', speed: '' })
-  const [saving, setSaving] = useState(false)
-  const [success, setSuccess] = useState(false)
-  const [error, setError]   = useState('')
-  const [demoText, setDemoText] = useState('Xin chào! Đây là giọng nói AI của tôi trong cuộc họp.')
-  const [demoing, setDemoing]   = useState(false)
+  const [configLoaded, setConfigLoaded] = useState(false)
+  const [mode, setMode] = useState('design')
+  const [sel, setSel]   = useState({ gender: '', age: '', pitch: '', style: '', accent: '' })
+
+  // Demo (shared between both modes)
+  const [demoText, setDemoText]   = useState('Xin chào! Đây là giọng nói AI của tôi trong cuộc họp.')
+  const [demoing, setDemoing]     = useState(false)
   const [demoError, setDemoError] = useState('')
+
+  // Active clone profile id + name (set by CloneTab when user picks one)
+  const [activeCloneId, setActiveCloneId]     = useState(null)
+  const [activeCloneName, setActiveCloneName] = useState('')
 
   useEffect(() => {
     api.get('/users/me/voice-config', accessToken)
-      .then(data => {
-        if (data?.mode) setMode(data.mode)
+      .then(async data => {
         setSel(parseInstruct(data?.design_instruct))
+        if (data?.active_voice_profile_id) {
+          setActiveCloneId(data.active_voice_profile_id)
+          const voices = await api.get('/voices', accessToken).catch(() => [])
+          const match = (voices ?? []).find(v => v.id === data.active_voice_profile_id)
+          if (match) {
+            setActiveCloneName(match.name)
+            if (data.mode === 'clone') setMode('clone')
+            return
+          }
+        }
+        // No active clone profile — ensure design mode is stored and shown
+        if (data?.mode === 'clone') {
+          api.patch('/users/me/voice-config', { mode: 'design' }, accessToken).catch(() => {})
+        }
       })
       .catch(() => {})
+      .finally(() => setConfigLoaded(true))
   }, [accessToken])
 
-  const pick = (key, val) => setSel(s => ({ ...s, [key]: s[key] === val ? '' : val }))
+  const pick = (key, val) => {
+    setSel(s => {
+      const next = { ...s, [key]: s[key] === val ? '' : val }
+      api.patch('/users/me/voice-config', { mode: 'design', design_instruct: buildInstruct(next) }, accessToken).catch(() => {})
+      return next
+    })
+  }
 
   const handleDemo = async () => {
     if (!demoText.trim()) return
     setDemoing(true); setDemoError('')
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8001'}/tts/demo/design`, {
+      const body = mode === 'clone' && activeCloneId
+        ? { text: demoText, voice_id: activeCloneId }
+        : { text: demoText, instruct: buildInstruct(sel) || 'female, young adult, moderate pitch, moderate speed' }
+
+      const endpoint = mode === 'clone' && activeCloneId ? '/tts/demo/clone' : '/tts/demo/design'
+
+      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8001'}${endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-        body: JSON.stringify({ text: demoText, instruct: buildInstruct(sel) || 'female, young adult, moderate pitch, moderate speed' }),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error('Không thể tạo giọng — thử lại sau')
       const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
+      const url  = URL.createObjectURL(blob)
       const audio = new Audio(url)
       audio.onended = () => URL.revokeObjectURL(url)
       audio.play()
@@ -66,146 +109,166 @@ export default function VoicePanel() {
     }
   }
 
-  const handleSave = async () => {
-    setSaving(true); setError(''); setSuccess(false)
-    try {
-      await api.patch('/users/me/voice-config', {
-        mode: 'design',
-        design_instruct: buildInstruct(sel),
-      }, accessToken)
-      setSuccess(true)
-      setTimeout(() => setSuccess(false), 2500)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setSaving(false)
-    }
-  }
-
   const instruct = buildInstruct(sel)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-      {/* Mode selector */}
-      <Section title="Chế độ giọng nói" desc="Cách AI tổng hợp giọng nói thay bạn trong cuộc họp">
-        <div style={{ display: 'flex', gap: 10 }}>
-          {[
-            { id: 'design', label: 'Thiết kế', desc: 'Tạo giọng bằng các thuộc tính' },
-            { id: 'clone',  label: 'Nhân bản', desc: 'Dùng giọng thật của bạn' },
-          ].map(opt => (
-            <button
-              key={opt.id}
-              onClick={() => setMode(opt.id)}
-              style={{
-                flex: 1, padding: '14px 16px', borderRadius: 10, textAlign: 'left',
-                fontFamily: 'inherit', cursor: 'pointer',
-                border: `1.5px solid ${mode === opt.id ? '#00C9B8' : 'rgba(255,255,255,0.08)'}`,
-                background: mode === opt.id ? 'rgba(0,201,184,0.08)' : 'rgba(255,255,255,0.03)',
-                transition: 'all 0.15s',
-              }}
-            >
-              <div style={{ marginBottom: 4 }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: mode === opt.id ? '#00C9B8' : 'rgba(255,255,255,0.6)' }}>
-                  {opt.label}
-                </span>
-              </div>
-              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.3)' }}>{opt.desc}</div>
-            </button>
-          ))}
-        </div>
+      {/* ── Current config card ── */}
+      <CurrentConfigCard mode={mode} instruct={instruct.split(', ').map(t => VI_LABEL[t] ?? t).join(', ')} cloneName={activeCloneName} />
+
+      {/* ── Nghe thử — always pinned at top ── */}
+      <Section title="Nghe thử" desc="Nhập văn bản và nghe thử giọng AI đang được chọn">
+        <textarea
+          value={demoText}
+          onChange={e => setDemoText(e.target.value)}
+          rows={3}
+          style={{
+            width: '100%', padding: '10px 14px', borderRadius: 9, resize: 'vertical',
+            background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.09)',
+            color: '#fff', fontSize: 14, outline: 'none', fontFamily: 'inherit',
+            transition: 'border-color 0.15s', boxSizing: 'border-box', lineHeight: 1.6,
+          }}
+          onFocus={e => e.target.style.borderColor = '#00C9B8'}
+          onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.09)'}
+        />
+        {demoError && <p style={{ margin: 0, fontSize: 12, color: '#F87171' }}>{demoError}</p>}
+        <button
+          onClick={handleDemo}
+          disabled={demoing || !demoText.trim()}
+          style={{
+            alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 8,
+            padding: '9px 20px', borderRadius: 9, cursor: demoing ? 'default' : 'pointer',
+            background: demoing ? 'rgba(0,201,184,0.3)' : 'rgba(0,201,184,0.12)',
+            color: '#00C9B8', fontWeight: 600, fontSize: 13,
+            fontFamily: 'inherit', transition: 'all 0.2s',
+            border: '1px solid rgba(0,201,184,0.25)',
+          }}
+        >
+          {demoing
+            ? <><Spinner /> Đang tạo giọng...</>
+            : <><PlayIcon /> Nghe thử</>
+          }
+        </button>
       </Section>
 
-      {mode === 'clone' && (
-        <Section title="Hồ sơ giọng nói" desc="Tải lên hoặc thu âm giọng của bạn để AI nhân bản">
-          <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.35)', fontStyle: 'italic' }}>
-            Tính năng nhân bản giọng sẽ hiển thị ở đây — Phase 4
-          </div>
-        </Section>
-      )}
+      {/* ── Divider ── */}
+      <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '0 -2px' }} />
 
-      {mode === 'design' && (
+      {!configLoaded ? (
+        <div style={{ padding: '24px 0', display: 'flex', justifyContent: 'center' }}>
+          <Spinner />
+        </div>
+      ) : (
         <>
-          {/* Instruct preview */}
-          <div style={{
-            padding: '12px 16px', borderRadius: 10,
-            background: 'rgba(0,201,184,0.04)', border: '1px solid rgba(0,201,184,0.12)',
-            display: 'flex', alignItems: 'center', gap: 10,
-          }}>
-            <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#00C9B8', flexShrink: 0, boxShadow: '0 0 6px #00C9B8' }}/>
-            <span style={{ fontSize: 13, color: instruct ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.25)', fontStyle: instruct ? 'normal' : 'italic' }}>
-              {instruct || 'Chọn các thuộc tính bên dưới để tạo giọng...'}
-            </span>
-          </div>
-
-          <Section title="Thuộc tính giọng nói" desc="Kết hợp các thẻ để mô tả giọng AI mong muốn">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-              <TagGroup label="Giới tính" tags={GENDER_TAGS} selected={sel.gender} onPick={v => pick('gender', v)} color="#00C9B8"/>
-              <TagGroup label="Độ tuổi"   tags={AGE_TAGS}    selected={sel.age}    onPick={v => pick('age', v)}    color="#A78BFA"/>
-              <TagGroup label="Cao độ"    tags={PITCH_TAGS}  selected={sel.pitch}  onPick={v => pick('pitch', v)}  color="#FB923C"/>
-              <TagGroup label="Tốc độ"    tags={SPEED_TAGS}  selected={sel.speed}  onPick={v => pick('speed', v)}  color="#34D399"/>
+          {/* ── Mode toggle ── */}
+          <Section title="Chế độ giọng nói" desc="Cách AI tổng hợp giọng nói thay bạn trong cuộc họp">
+            <div style={{ display: 'flex', gap: 10 }}>
+              {[
+                { id: 'design', label: 'Thiết kế', desc: 'Tạo giọng bằng các thuộc tính' },
+                { id: 'clone',  label: 'Nhân bản', desc: 'Dùng giọng thật của bạn' },
+              ].map(opt => (
+                <button
+                  key={opt.id}
+                  onClick={() => setMode(opt.id)}
+                  style={{
+                    flex: 1, padding: '14px 16px', borderRadius: 10, textAlign: 'left',
+                    fontFamily: 'inherit', cursor: 'pointer',
+                    border: `1.5px solid ${mode === opt.id ? '#00C9B8' : 'rgba(255,255,255,0.08)'}`,
+                    background: mode === opt.id ? 'rgba(0,201,184,0.08)' : 'rgba(255,255,255,0.03)',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  <div style={{ marginBottom: 4 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: mode === opt.id ? '#00C9B8' : 'rgba(255,255,255,0.6)' }}>
+                      {opt.label}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.3)' }}>{opt.desc}</div>
+                </button>
+              ))}
             </div>
           </Section>
 
-          {/* Demo */}
-          <Section title="Nghe thử" desc="Thử nghe giọng AI với văn bản tuỳ chỉnh">
-            <textarea
-              value={demoText}
-              onChange={e => setDemoText(e.target.value)}
-              rows={3}
-              style={{
-                width: '100%', padding: '10px 14px', borderRadius: 9, resize: 'vertical',
-                background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.09)',
-                color: '#fff', fontSize: 14, outline: 'none', fontFamily: 'inherit',
-                transition: 'border-color 0.15s', boxSizing: 'border-box', lineHeight: 1.6,
-              }}
-              onFocus={e => e.target.style.borderColor = '#00C9B8'}
-              onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.09)'}
+          {/* ── Design tab ── */}
+          {mode === 'design' && (
+            <Section title="Thuộc tính giọng nói" desc="Kết hợp các thẻ để mô tả giọng AI mong muốn">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                <TagGroup label="Giới tính" tags={GENDER_TAGS} selected={sel.gender} onPick={v => pick('gender', v)} color="#00C9B8" />
+                <TagGroup label="Độ tuổi"   tags={AGE_TAGS}    selected={sel.age}    onPick={v => pick('age', v)}    color="#A78BFA" />
+                <TagGroup label="Cao độ"    tags={PITCH_TAGS}  selected={sel.pitch}  onPick={v => pick('pitch', v)}  color="#FB923C" />
+                <TagGroup label="Phong cách" tags={STYLE_TAGS} selected={sel.style}  onPick={v => pick('style', v)}  color="#F472B6" />
+                <TagGroup label="Giọng vùng" tags={ACCENT_TAGS} selected={sel.accent} onPick={v => pick('accent', v)} color="#34D399" />
+              </div>
+            </Section>
+          )}
+
+          {/* ── Clone tab ── */}
+          {mode === 'clone' && (
+            <CloneTab
+              activeProfileId={activeCloneId}
+              onActiveVoiceChange={(id, name) => { setActiveCloneId(id); setActiveCloneName(name ?? '') }}
             />
-            {demoError && <p style={{ margin: 0, fontSize: 12, color: '#F87171' }}>{demoError}</p>}
-            <button
-              onClick={handleDemo}
-              disabled={demoing || !demoText.trim()}
-              style={{
-                alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 8,
-                padding: '9px 20px', borderRadius: 9, cursor: demoing ? 'default' : 'pointer',
-                background: demoing ? 'rgba(0,201,184,0.3)' : 'rgba(0,201,184,0.12)',
-                color: '#00C9B8', fontWeight: 600, fontSize: 13,
-                fontFamily: 'inherit', transition: 'all 0.2s',
-                border: '1px solid rgba(0,201,184,0.25)',
-              }}
-            >
-              {demoing
-                ? <><Spinner /> Đang tạo giọng...</>
-                : <><PlayIcon /> Nghe thử</>
-              }
-            </button>
-          </Section>
+          )}
         </>
       )}
+    </div>
+  )
+}
 
-      {error && <p style={{ fontSize: 13, color: '#F87171', margin: 0 }}>{error}</p>}
+function CurrentConfigCard({ mode, instruct, cloneName }) {
+  const isDesign = mode === 'design' || !cloneName  // stay on design until a profile is actually picked
+  const hasDetail = isDesign ? !!instruct : !!cloneName
 
-      {mode === 'design' && (
-        <button onClick={handleSave} disabled={saving} style={{
-          padding: '10px 24px', borderRadius: 9, alignSelf: 'flex-start',
-          background: saving ? 'rgba(0,201,184,0.4)' : success ? 'rgba(52,211,153,0.15)' : 'linear-gradient(135deg,#00C9B8,#0099CC)',
-          color: success ? '#34D399' : '#fff', fontWeight: 700, fontSize: 14,
-          cursor: saving ? 'default' : 'pointer',
-          boxShadow: saving || success ? 'none' : '0 4px 16px rgba(0,201,184,0.25)',
-          fontFamily: 'inherit', transition: 'all 0.2s',
-          border: success ? '1px solid rgba(52,211,153,0.25)' : 'none',
-        }}>
-          {saving ? 'Đang lưu...' : success ? '✓ Đã lưu' : 'Lưu thay đổi'}
-        </button>
-      )}
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 12,
+      padding: '12px 16px', borderRadius: 12,
+      background: 'rgba(0,201,184,0.05)',
+      border: '1px solid rgba(0,201,184,0.15)',
+    }}>
+      {/* Icon */}
+      <div style={{
+        width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+        background: 'rgba(0,201,184,0.1)', border: '1px solid rgba(0,201,184,0.2)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        color: '#00C9B8',
+      }}>
+        {isDesign
+          ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M8.46 8.46a5 5 0 0 0 0 7.07"/></svg>
+          : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+        }
+      </div>
+
+      {/* Text */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 3 }}>
+          Giọng đang dùng
+        </div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: hasDetail ? '#fff' : 'rgba(255,255,255,0.3)', fontStyle: hasDetail ? 'normal' : 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {isDesign
+            ? (instruct || 'Chưa chọn thuộc tính')
+            : (cloneName || 'Chưa chọn hồ sơ')
+          }
+        </div>
+      </div>
+
+      {/* Mode badge */}
+      <div style={{
+        flexShrink: 0, padding: '3px 10px', borderRadius: 99, fontSize: 11, fontWeight: 700,
+        background: isDesign ? 'rgba(167,139,250,0.12)' : 'rgba(0,201,184,0.12)',
+        color: isDesign ? '#A78BFA' : '#00C9B8',
+        border: `1px solid ${isDesign ? 'rgba(167,139,250,0.25)' : 'rgba(0,201,184,0.25)'}`,
+      }}>
+        {isDesign ? 'Thiết kế' : 'Nhân bản'}
+      </div>
     </div>
   )
 }
 
 function PlayIcon() {
   return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
   )
 }
 
@@ -214,7 +277,7 @@ function Spinner() {
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
       style={{ animation: 'spin 0.8s linear infinite' }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
-      <path d="M12 2a10 10 0 0 1 10 10"/>
+      <path d="M12 2a10 10 0 0 1 10 10" />
     </svg>
   )
 }
@@ -236,7 +299,7 @@ function TagGroup({ label, tags, selected, onPick, color }) {
               color: active ? color : 'rgba(255,255,255,0.4)',
               cursor: 'pointer', transition: 'all 0.15s', fontFamily: 'inherit',
             }}>
-              {tag}
+              {VI_LABEL[tag] ?? tag}
             </button>
           )
         })}

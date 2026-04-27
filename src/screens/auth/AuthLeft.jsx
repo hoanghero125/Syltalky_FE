@@ -40,8 +40,8 @@ export default function AuthLeft() {
           Nền tảng họp thông minh
         </div>
         <h1 style={{ fontSize: 48, fontWeight: 800, lineHeight: 1.1, color: '#fff', letterSpacing: '-1.5px', margin: 0 }}>
-          <span style={{ color: '#00C9B8' }}>Mọi</span> giọng<br/>
-          <span style={{ display: 'inline-block', marginTop: 10 }}>được lắng nghe</span>
+          Mọi giọng nói<br/>
+          <span style={{ display: 'inline-block', marginTop: 10, color: '#00C9B8' }}>được lắng nghe</span>
         </h1>
         <p style={{ marginTop: 22, fontSize: 14, color: 'rgba(255,255,255,0.45)', lineHeight: 1.7, maxWidth: 340 }}>
           Phụ đề trực tiếp, giọng nói AI, dịch ngôn ngữ ký hiệu và tóm tắt cuộc họp tự động — tích hợp sẵn trong mọi cuộc gọi.
@@ -51,7 +51,7 @@ export default function AuthLeft() {
       <div style={{ position: 'relative', zIndex: 1 }}>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: 'rgba(0,201,184,0.1)', border: '1px solid rgba(0,201,184,0.25)', borderRadius: 99, padding: '8px 16px' }}>
           <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#00C9B8', boxShadow: '0 0 8px #00C9B8' }}/>
-          <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>AI-powered · Real-time</span>
+          <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>AI-powered</span>
         </div>
       </div>
     </div>

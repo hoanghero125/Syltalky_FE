@@ -19,7 +19,7 @@ export default function LoginScreen() {
     setLoading(true)
     try {
       const data = await api.post('/auth/login', { email, password })
-      setTokens(data.access_token)
+      setTokens(data.access_token, data.refresh_token)
       setUser(data.user)
       navigate('/home')
     } catch (err) {
