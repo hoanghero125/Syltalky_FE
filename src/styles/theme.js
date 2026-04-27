@@ -14,7 +14,7 @@ export const theme = {
     success: '#22C55E',
     warning: '#F59E0B',
   },
-  font: 'Poppins, sans-serif',
+  font: '"Be Vietnam Pro", sans-serif',
   radius: {
     sm: '7px',
     md: '10px',

@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import useStore from './store'
 
+import LandingPage from './screens/LandingPage'
 import AppLayout from './layouts/AppLayout'
 
 import LoginScreen from './screens/auth/LoginScreen'
@@ -24,13 +25,16 @@ function PrivateRoute({ children }) {
 
 function GuestRoute({ children }) {
   const accessToken = useStore((s) => s.accessToken)
-  return accessToken ? <Navigate to="/" replace /> : children
+  return accessToken ? <Navigate to="/home" replace /> : children
 }
 
 export default function Router() {
   return (
     <BrowserRouter>
       <Routes>
+        {/* Public */}
+        <Route path="/" element={<LandingPage />} />
+
         {/* Guest only */}
         <Route path="/login" element={<GuestRoute><LoginScreen /></GuestRoute>} />
         <Route path="/register" element={<GuestRoute><RegisterScreen /></GuestRoute>} />
@@ -45,7 +49,7 @@ export default function Router() {
 
         {/* Main app */}
         <Route path="/" element={<PrivateRoute><AppLayout /></PrivateRoute>}>
-          <Route index element={<HomeScreen />} />
+          <Route path="home" element={<HomeScreen />} />
           <Route path="library" element={<LibraryScreen />} />
           <Route path="library/:meetingId" element={<MeetingDetailScreen />} />
         </Route>

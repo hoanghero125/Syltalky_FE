@@ -21,7 +21,7 @@ export default function LoginScreen() {
       const data = await api.post('/auth/login', { email, password })
       setTokens(data.access_token)
       setUser(data.user)
-      navigate('/')
+      navigate('/home')
     } catch (err) {
       setError(err.message)
     } finally {

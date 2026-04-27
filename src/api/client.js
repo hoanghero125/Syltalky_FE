@@ -25,5 +25,6 @@ export const api = {
   post: (path, body, token) => request('POST', path, { body, token }),
   postForm: (path, formData, token) => request('POST', path, { formData, token }),
   patch: (path, body, token) => request('PATCH', path, { body, token }),
+  patchForm: (path, formData, token) => request('PATCH', path, { formData, token }),
   delete: (path, token) => request('DELETE', path, { token }),
 }

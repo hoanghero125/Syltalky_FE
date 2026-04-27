@@ -1,3 +1,5 @@
+import { Link } from 'react-router-dom'
+
 export default function AuthLeft() {
   return (
     <div style={{
@@ -22,9 +24,14 @@ export default function AuthLeft() {
       <div style={{ position: 'absolute', width: 400, height: 400, borderRadius: '50%', bottom: '-15%', left: '-10%', background: 'radial-gradient(circle, rgba(59,158,204,0.1) 0%, transparent 65%)', pointerEvents: 'none' }}/>
 
       <div style={{ position: 'relative', zIndex: 1 }}>
-        <span style={{ fontSize: 22, fontWeight: 800, color: '#fff', letterSpacing: '-0.5px' }}>
-          Syl<span style={{ color: '#00C9B8' }}>talky</span>
-        </span>
+        <Link to="/" style={{ display: 'inline-block' }}>
+          <img src="/images/full_logo_transparent.png" alt="Syltalky" style={{ height: 46, width: 'auto', objectFit: 'contain' }}
+            onError={e => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block' }}
+          />
+          <span style={{ display: 'none', fontSize: 22, fontWeight: 800, color: '#fff', letterSpacing: '-0.5px' }}>
+            Syl<span style={{ color: '#00C9B8' }}>talky</span>
+          </span>
+        </Link>
       </div>
 
       <div style={{ position: 'relative', zIndex: 1, flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', paddingTop: 40 }}>
@@ -33,7 +40,8 @@ export default function AuthLeft() {
           Nền tảng họp thông minh
         </div>
         <h1 style={{ fontSize: 48, fontWeight: 800, lineHeight: 1.1, color: '#fff', letterSpacing: '-1.5px', margin: 0 }}>
-          <span style={{ color: '#00C9B8' }}>Mọi</span> giọng<br/>được lắng nghe
+          <span style={{ color: '#00C9B8' }}>Mọi</span> giọng<br/>
+          <span style={{ display: 'inline-block', marginTop: 10 }}>được lắng nghe</span>
         </h1>
         <p style={{ marginTop: 22, fontSize: 14, color: 'rgba(255,255,255,0.45)', lineHeight: 1.7, maxWidth: 340 }}>
           Phụ đề trực tiếp, giọng nói AI, dịch ngôn ngữ ký hiệu và tóm tắt cuộc họp tự động — tích hợp sẵn trong mọi cuộc gọi.
