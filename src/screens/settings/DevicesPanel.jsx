@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { Section } from './OverviewPanel'
+import useStore from '../../store'
 
 export default function DevicesPanel() {
+  const { mirrorCamera, setMirrorCamera } = useStore()
   const [devices, setDevices] = useState({ video: [], audioIn: [], audioOut: [] })
   const [sel, setSel] = useState({ video: '', audioIn: '', audioOut: '' })
   const [permError, setPermError] = useState(false)
@@ -102,7 +104,7 @@ export default function DevicesPanel() {
             autoPlay
             playsInline
             muted
-            style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }}
+            style={{ width: '100%', height: '100%', objectFit: 'cover', transform: mirrorCamera ? 'scaleX(-1)' : 'none' }}
           />
           {!camStream && (
             <div style={{
@@ -116,6 +118,35 @@ export default function DevicesPanel() {
             </div>
           )}
         </div>
+        {/* Mirror toggle */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '10px 14px', borderRadius: 9,
+          background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)',
+        }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.75)' }}>Lật camera</div>
+            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>Hiển thị video như gương</div>
+          </div>
+          <button
+            onClick={() => setMirrorCamera(!mirrorCamera)}
+            style={{
+              width: 44, height: 24, borderRadius: 12, border: 'none',
+              background: mirrorCamera ? '#00C9B8' : 'rgba(255,255,255,0.12)',
+              cursor: 'pointer', position: 'relative', transition: 'background 0.2s', flexShrink: 0,
+            }}
+          >
+            <div style={{
+              position: 'absolute', top: 2,
+              left: mirrorCamera ? 22 : 2,
+              width: 20, height: 20, borderRadius: '50%',
+              background: '#fff',
+              transition: 'left 0.2s',
+              boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+            }} />
+          </button>
+        </div>
+
         <DeviceSelect
           label="Camera"
           devices={devices.video}

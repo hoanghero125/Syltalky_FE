@@ -11,6 +11,7 @@ const useStore = create(
       language: 'vi',
       subtitleSize: 'medium',
       subtitleFont: 'system',
+      mirrorCamera: true,
       notifications: [],
 
       setUser: (user) => set({ user }),
@@ -19,6 +20,7 @@ const useStore = create(
       setLanguage: (language) => set({ language }),
       setSubtitleSize: (subtitleSize) => set({ subtitleSize }),
       setSubtitleFont: (subtitleFont) => set({ subtitleFont }),
+      setMirrorCamera: (mirrorCamera) => set({ mirrorCamera }),
 
       addNotification: (notification) =>
         set((state) => ({ notifications: [notification, ...state.notifications] })),
@@ -42,6 +44,7 @@ const useStore = create(
         language: state.language,
         subtitleSize: state.subtitleSize,
         subtitleFont: state.subtitleFont,
+        mirrorCamera: state.mirrorCamera,
       }),
     }
   )

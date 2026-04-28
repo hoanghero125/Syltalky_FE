@@ -1,5 +1,7 @@
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useState, useEffect, useRef, useCallback } from 'react'
+import useStore from '../store'
+import UserAvatar from '../components/UserAvatar'
 
 /* ─── Scroll-reveal hook ─── */
 function useReveal(containerRef) {
@@ -93,6 +95,9 @@ export default function LandingPage() {
   const containerRef = useRef(null)
   const [scrolled, setScrolled]   = useState(false)
   const [mousePos, setMousePos]   = useState({ x: 0, y: 0 })
+  const navigate = useNavigate()
+  const { user, accessToken } = useStore()
+  const isLoggedIn = !!accessToken
 
   /* Attach scroll to the container div, not window */
   useEffect(() => {
@@ -197,16 +202,41 @@ export default function LandingPage() {
             <button onClick={() => scrollTo('stats')}    className="nav-btn" style={{ fontSize: 14, fontWeight: 500, color: 'rgba(255,255,255,0.42)', background: 'none', border: 'none', cursor: 'pointer', transition: 'color 0.2s', padding: 0, fontFamily: 'inherit' }}>Về chúng tôi</button>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Link to="/login" className="nav-btn" style={{ padding: '8px 18px', borderRadius: 8, color: 'rgba(255,255,255,0.48)', fontSize: 14, fontWeight: 500, textDecoration: 'none', transition: 'color 0.2s' }}>
-              Đăng nhập
-            </Link>
-            <Link to="/register" className="lp-btn-teal" style={{
-              padding: '8px 22px', borderRadius: 8, fontSize: 14, fontWeight: 600,
-              background: '#00D4C0', color: '#050810', textDecoration: 'none',
-              boxShadow: '0 4px 20px rgba(0,212,192,0.28)', transition: 'all 0.22s', display: 'inline-block',
-            }}>
-              Đăng ký
-            </Link>
+            {isLoggedIn ? (
+              <>
+                <button onClick={() => navigate('/home')} className="lp-btn-teal" style={{
+                  padding: '8px 22px', borderRadius: 8, fontSize: 14, fontWeight: 600,
+                  background: '#00D4C0', color: '#050810', border: 'none', cursor: 'pointer',
+                  boxShadow: '0 4px 20px rgba(0,212,192,0.28)', transition: 'all 0.22s',
+                  fontFamily: '"Be Vietnam Pro", sans-serif',
+                }}>
+                  Vào ứng dụng →
+                </button>
+                <span style={{
+                  fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.55)',
+                  padding: '5px 12px 5px 6px', borderRadius: 8,
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  background: 'rgba(255,255,255,0.04)',
+                  display: 'flex', alignItems: 'center', gap: 8,
+                }}>
+                  <UserAvatar name={user?.display_name} avatarUrl={user?.avatar_url} size={24} />
+                  {user?.display_name}
+                </span>
+              </>
+            ) : (
+              <>
+                <Link to="/login" className="nav-btn" style={{ padding: '8px 18px', borderRadius: 8, color: 'rgba(255,255,255,0.48)', fontSize: 14, fontWeight: 500, textDecoration: 'none', transition: 'color 0.2s' }}>
+                  Đăng nhập
+                </Link>
+                <Link to="/register" className="lp-btn-teal" style={{
+                  padding: '8px 22px', borderRadius: 8, fontSize: 14, fontWeight: 600,
+                  background: '#00D4C0', color: '#050810', textDecoration: 'none',
+                  boxShadow: '0 4px 20px rgba(0,212,192,0.28)', transition: 'all 0.22s', display: 'inline-block',
+                }}>
+                  Đăng ký
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </nav>
@@ -261,20 +291,35 @@ export default function LandingPage() {
           </p>
 
           <div className="h-cta" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            <Link to="/register" className="lp-btn-teal" style={{
-              padding: '13px 30px', borderRadius: 10, fontSize: 15, fontWeight: 700,
-              background: '#00D4C0', color: '#050810', textDecoration: 'none',
-              boxShadow: '0 8px 32px rgba(0,212,192,0.38)', transition: 'all 0.22s', display: 'inline-block',
-            }}>
-              Tạo tài khoản miễn phí
-            </Link>
-            <Link to="/login" className="lp-btn-ghost" style={{
-              padding: '12px 28px', borderRadius: 10, fontSize: 15, fontWeight: 500,
-              border: '1px solid rgba(255,255,255,0.11)', color: 'rgba(255,255,255,0.65)',
-              textDecoration: 'none', background: 'rgba(255,255,255,0.035)', transition: 'all 0.22s',
-            }}>
-              Đăng nhập
-            </Link>
+            {isLoggedIn ? (
+              <button onClick={() => navigate('/home')} className="lp-btn-teal" style={{
+                padding: '13px 34px', borderRadius: 10, fontSize: 15, fontWeight: 700,
+                background: '#00D4C0', color: '#050810', border: 'none', cursor: 'pointer',
+                boxShadow: '0 8px 32px rgba(0,212,192,0.38)', transition: 'all 0.22s',
+                fontFamily: '"Be Vietnam Pro", sans-serif',
+                display: 'flex', alignItems: 'center', gap: 10,
+              }}>
+                Vào ứng dụng
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+              </button>
+            ) : (
+              <>
+                <Link to="/register" className="lp-btn-teal" style={{
+                  padding: '13px 30px', borderRadius: 10, fontSize: 15, fontWeight: 700,
+                  background: '#00D4C0', color: '#050810', textDecoration: 'none',
+                  boxShadow: '0 8px 32px rgba(0,212,192,0.38)', transition: 'all 0.22s', display: 'inline-block',
+                }}>
+                  Tạo tài khoản miễn phí
+                </Link>
+                <Link to="/login" className="lp-btn-ghost" style={{
+                  padding: '12px 28px', borderRadius: 10, fontSize: 15, fontWeight: 500,
+                  border: '1px solid rgba(255,255,255,0.11)', color: 'rgba(255,255,255,0.65)',
+                  textDecoration: 'none', background: 'rgba(255,255,255,0.035)', transition: 'all 0.22s',
+                }}>
+                  Đăng nhập
+                </Link>
+              </>
+            )}
           </div>
 
         </div>
@@ -424,23 +469,36 @@ export default function LandingPage() {
           </div>
 
           <div style={{ position: 'relative', zIndex: 1, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 12, minWidth: 220 }}>
-            <Link to="/register" className="lp-btn-teal" style={{
-              padding: '14px 36px', borderRadius: 12, fontSize: 15, fontWeight: 700,
-              background: '#00D4C0', color: '#050810', textDecoration: 'none',
-              boxShadow: '0 8px 32px rgba(0,212,192,0.32)', transition: 'all 0.22s',
-              textAlign: 'center', display: 'block', whiteSpace: 'nowrap',
-            }}>
-              Tạo tài khoản miễn phí
-            </Link>
-            <Link to="/login" style={{
-              textAlign: 'center', fontSize: 13, color: 'rgba(255,255,255,0.3)',
-              textDecoration: 'none', transition: 'color 0.2s',
-            }}
-              onMouseEnter={e => e.currentTarget.style.color = 'rgba(255,255,255,0.6)'}
-              onMouseLeave={e => e.currentTarget.style.color = 'rgba(255,255,255,0.3)'}
-            >
-              Đã có tài khoản? Đăng nhập
-            </Link>
+            {isLoggedIn ? (
+              <button onClick={() => navigate('/home')} className="lp-btn-teal" style={{
+                padding: '14px 36px', borderRadius: 12, fontSize: 15, fontWeight: 700,
+                background: '#00D4C0', color: '#050810', border: 'none', cursor: 'pointer',
+                boxShadow: '0 8px 32px rgba(0,212,192,0.32)', transition: 'all 0.22s',
+                textAlign: 'center', whiteSpace: 'nowrap', fontFamily: '"Be Vietnam Pro", sans-serif',
+              }}>
+                Vào ứng dụng →
+              </button>
+            ) : (
+              <>
+                <Link to="/register" className="lp-btn-teal" style={{
+                  padding: '14px 36px', borderRadius: 12, fontSize: 15, fontWeight: 700,
+                  background: '#00D4C0', color: '#050810', textDecoration: 'none',
+                  boxShadow: '0 8px 32px rgba(0,212,192,0.32)', transition: 'all 0.22s',
+                  textAlign: 'center', display: 'block', whiteSpace: 'nowrap',
+                }}>
+                  Tạo tài khoản miễn phí
+                </Link>
+                <Link to="/login" style={{
+                  textAlign: 'center', fontSize: 13, color: 'rgba(255,255,255,0.3)',
+                  textDecoration: 'none', transition: 'color 0.2s',
+                }}
+                  onMouseEnter={e => e.currentTarget.style.color = 'rgba(255,255,255,0.6)'}
+                  onMouseLeave={e => e.currentTarget.style.color = 'rgba(255,255,255,0.3)'}
+                >
+                  Đã có tài khoản? Đăng nhập
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </section>
