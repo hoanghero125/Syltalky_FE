@@ -2,10 +2,10 @@ import useStore from '../../store'
 import { Section } from './OverviewPanel'
 
 const SIZES = [
-  { id: 'small',  label: 'Nhỏ',     px: 13 },
-  { id: 'medium', label: 'Vừa',     px: 16 },
-  { id: 'large',  label: 'Lớn',     px: 20 },
-  { id: 'xl',     label: 'Rất lớn', px: 24 },
+  { id: 'small',  label: 'Nhỏ',     px: 16 },
+  { id: 'medium', label: 'Vừa',     px: 20 },
+  { id: 'large',  label: 'Lớn',     px: 26 },
+  { id: 'xl',     label: 'Rất lớn', px: 34 },
 ]
 
 const FONTS = [

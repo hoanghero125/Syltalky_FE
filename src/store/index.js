@@ -22,6 +22,8 @@ const useStore = create(
       setSubtitleFont: (subtitleFont) => set({ subtitleFont }),
       setMirrorCamera: (mirrorCamera) => set({ mirrorCamera }),
 
+      setNotifications: (notifications) => set({ notifications }),
+
       addNotification: (notification) =>
         set((state) => ({ notifications: [notification, ...state.notifications] })),
 

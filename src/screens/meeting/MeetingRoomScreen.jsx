@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useNavigate, useParams, useLocation } from 'react-router-dom'
+import { useNavigate, useParams, useLocation, Navigate } from 'react-router-dom'
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -9,7 +9,7 @@ import {
   useParticipants,
   VideoTrack,
 } from '@livekit/components-react'
-import { Track, RoomEvent, DisconnectReason } from 'livekit-client'
+import { Track, RoomEvent, DisconnectReason, DataPacket_Kind, LocalAudioTrack } from 'livekit-client'
 import useStore from '../../store'
 import { meetingsApi } from '../../api/meetings'
 import UserAvatar from '../../components/UserAvatar'
@@ -55,15 +55,11 @@ export default function MeetingRoomScreen() {
   const [authorized] = useState(
     () => sessionStorage.getItem('meeting_join_authorized') === '1'
   )
+  const [roomEnded, setRoomEnded] = useState(false)
 
-  useEffect(() => {
-    sessionStorage.removeItem('meeting_join_authorized')
-    if (!state.token || !authorized) {
-      navigate(`/meeting/${roomCode}`, { replace: true })
-    }
-  }, [])
+  useEffect(() => { sessionStorage.removeItem('meeting_join_authorized') }, [])
 
-  if (!state.token || !authorized) return null
+  if (!state.token || !authorized) return <Navigate to={`/meeting/${roomCode}`} replace />
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#060810', fontFamily: '"Be Vietnam Pro", sans-serif' }}>
@@ -79,32 +75,58 @@ export default function MeetingRoomScreen() {
         <RoomInner
           roomCode={roomCode}
           meetingId={state.meeting_id}
+          hostId={state.host_id}
           isHost={user?.id === state.host_id}
           accessToken={accessToken}
           localUser={user}
+          initialWaitingRoom={state.waiting_room_enabled ?? true}
+          onRoomEnded={() => setRoomEnded(true)}
         />
       </LiveKitRoom>
+
+      {/* Rendered outside LiveKitRoom so LiveKit state resets can't wipe it */}
+      {roomEnded && <RoomEndedOverlay meetingId={state.meeting_id} navigate={navigate} />}
     </div>
   )
 }
 
 /* ── RoomInner ──────────────────────────────────────────────────────────── */
-function RoomInner({ roomCode, meetingId, isHost, accessToken, localUser }) {
+function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser, initialWaitingRoom = true, onRoomEnded }) {
   const navigate   = useNavigate()
   const { localParticipant } = useLocalParticipant()
   const participants = useParticipants()
   const room       = useRoomContext()
-  const { mirrorCamera } = useStore()
+  const { subtitleSize, subtitleFont } = useStore()
 
-  const [panel,      setPanel]      = useState(null)
-  const [elapsed,    setElapsed]    = useState(0)
+  const [panel,           setPanel]           = useState(null)
+  const [panelWidth,      setPanelWidth]       = useState(460)
+  const [elapsed,         setElapsed]          = useState(0)
+  const [captionsVisible, setCaptionsVisible]  = useState(false)
+  const [captions,        setCaptions]         = useState([]) // [{id, speaker_id, speaker_name, text, timestamp_ms}]
+  const [ttsMessages,  setTtsMessages]  = useState([]) // [{id, speaker_id, speaker_name, text, audio_url, timestamp_ms}]
+  const [replayLog,    setReplayLog]    = useState([]) // entries added when "Phát lại" is clicked — shown in Nội dung only
+  const [chatMessages, setChatMessages] = useState([]) // [{id, sender_id, sender_name, text, timestamp_ms}]
+  const [chatUnread,   setChatUnread]   = useState(0)
+  const panelRef = useRef(null)
+  useEffect(() => { panelRef.current = panel }, [panel])
+
+  const captionsWsRef       = useRef(null)
+  const audioCtxRef         = useRef(null)
+  const processorRef        = useRef(null)
+  const micStreamRef        = useRef(null)
+  const localParticipantRef = useRef(localParticipant)
+  useEffect(() => { localParticipantRef.current = localParticipant }, [localParticipant])
+  const isEndingRef = useRef(false)
   const [ending,     setEnding]     = useState(false)
   const [leaving,    setLeaving]    = useState(false)
   const [copyTip,    setCopyTip]    = useState(false)
   const [userInfoMap, setUserInfoMap] = useState({})
-  const [roomEnded,    setRoomEnded]    = useState(false)
-  const [wasKicked,    setWasKicked]    = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false) // identity → {display_name, avatar_url}
+  const [wasKicked,      setWasKicked]      = useState(false)
+  const [hasLeft,        setHasLeft]        = useState(false)
+  const [dupSession,     setDupSession]     = useState(false)
+  const [settingsOpen,   setSettingsOpen]   = useState(false)
+  const [waitingRequests, setWaitingRequests] = useState([]) // [{request_id, user_id, display_name, avatar_url}]
+  const [waitingRoomEnabled, setWaitingRoomEnabled] = useState(initialWaitingRoom)
 
   const micEnabled         = localParticipant?.isMicrophoneEnabled  ?? false
   const camEnabled         = localParticipant?.isCameraEnabled      ?? false
@@ -126,18 +148,111 @@ function RoomInner({ roomCode, meetingId, isHost, accessToken, localUser }) {
   // Detect server-initiated disconnect (host ended meeting)
   useEffect(() => {
     function onDisconnected(reason) {
-      if (reason === DisconnectReason.PARTICIPANT_REMOVED) {
+      if (reason === DisconnectReason.DUPLICATE_IDENTITY) {
+        setDupSession(true)
+      } else if (reason === DisconnectReason.PARTICIPANT_REMOVED) {
         setWasKicked(true)
       } else if (
         reason === DisconnectReason.ROOM_DELETED ||
         reason === DisconnectReason.SERVER_SHUTDOWN
       ) {
-        setRoomEnded(true)
+        if (isEndingRef.current) return
+        onRoomEnded?.()
       }
     }
     room.on(RoomEvent.Disconnected, onDisconnected)
     return () => { room.off(RoomEvent.Disconnected, onDisconnected) }
   }, [room])
+
+  // Chat via LiveKit DataChannel
+  useEffect(() => {
+    function onData(payload) {
+      try {
+        const msg = JSON.parse(new TextDecoder().decode(payload))
+        if (msg.type === 'chat') {
+          setChatMessages(prev => [...prev.slice(-199), { id: Date.now() + Math.random(), ...msg }])
+          if (panelRef.current !== 'chat') setChatUnread(n => n + 1)
+        }
+      } catch {}
+    }
+    room.on(RoomEvent.DataReceived, onData)
+    return () => room.off(RoomEvent.DataReceived, onData)
+  }, [room])
+
+  const sendChat = useCallback((text) => {
+    const msg = {
+      type: 'chat',
+      sender_id: localUser?.id || '',
+      sender_name: localUser?.display_name || 'Bạn',
+      text,
+      timestamp_ms: Date.now(),
+    }
+    // Add to own list immediately
+    setChatMessages(prev => [...prev.slice(-199), { id: Date.now() + Math.random(), ...msg }])
+    // Broadcast to others
+    const encoded = new TextEncoder().encode(JSON.stringify(msg))
+    localParticipant?.publishData(encoded, { reliable: true }).catch(() => {})
+  }, [localParticipant, localUser])
+
+  // Captions WebSocket — always connected in a meeting to receive TTS from others
+  useEffect(() => {
+    if (!meetingId || !accessToken) return
+
+    const wsUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8001')
+      .replace('http://', 'ws://')
+      .replace('https://', 'wss://')
+      + `/meetings/${meetingId}/captions?token=${accessToken}`
+
+    const ws = new WebSocket(wsUrl)
+    captionsWsRef.current = ws
+
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data)
+        if (msg.type === 'join_request') {
+          setWaitingRequests(prev => {
+            if (prev.find(r => r.request_id === msg.request_id)) return prev
+            return [...prev, msg]
+          })
+        } else if (msg.type === 'join_cancelled') {
+          setWaitingRequests(prev => prev.filter(r => r.request_id !== msg.request_id))
+        } else if (msg.type === 'tts' || msg.is_tts) {
+          setTtsMessages(prev => [...prev.slice(-49), { id: Date.now() + Math.random(), ...msg }])
+        } else if (msg.speaker_id && msg.text) {
+          setCaptions(prev => [...prev.slice(-99), { id: Date.now() + Math.random(), ...msg }])
+        }
+      } catch {}
+    }
+
+    ws.onopen = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        micStreamRef.current = stream
+        const ctx = new AudioContext({ sampleRate: 16000 })
+        audioCtxRef.current = ctx
+        await ctx.audioWorklet.addModule('/pcm-processor.js')
+        const source = ctx.createMediaStreamSource(stream)
+        const worklet = new AudioWorkletNode(ctx, 'pcm-processor')
+        processorRef.current = worklet
+        worklet.port.onmessage = (e) => {
+          if (ws.readyState !== WebSocket.OPEN) return
+          if (!localParticipantRef.current?.isMicrophoneEnabled) return
+          ws.send(e.data.buffer)
+        }
+        source.connect(worklet)
+        worklet.connect(ctx.destination)
+      } catch {}
+    }
+
+    return () => {
+      ws.close()
+      captionsWsRef.current = null
+      if (processorRef.current) { processorRef.current.disconnect(); processorRef.current.port.onmessage = null; processorRef.current = null }
+      if (audioCtxRef.current) { audioCtxRef.current.close(); audioCtxRef.current = null }
+      if (micStreamRef.current) { micStreamRef.current.getTracks().forEach(t => t.stop()); micStreamRef.current = null }
+    }
+  }, [meetingId, accessToken])
+
 
   // Fetch avatar + name for all participants from BE
   useEffect(() => {
@@ -146,7 +261,7 @@ function RoomInner({ roomCode, meetingId, isHost, accessToken, localUser }) {
       .map(p => p.identity)
     if (!remoteIds.length) return
     const ids = remoteIds.join(',')
-    fetch(`http://localhost:8001/users/by-ids?ids=${ids}`, {
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8001'}/users/by-ids?ids=${ids}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
       .then(r => r.json())
@@ -175,20 +290,25 @@ function RoomInner({ roomCode, meetingId, isHost, accessToken, localUser }) {
   const handleLeave = useCallback(async () => {
     setLeaving(true)
     await room.disconnect()
-    navigate('/home', { replace: true })
-  }, [room, navigate])
+    setHasLeft(true)
+    setLeaving(false)
+  }, [room])
 
   const handleEnd = useCallback(async () => {
     setEnding(true)
+    isEndingRef.current = true
     try { if (meetingId) await meetingsApi.end(meetingId, accessToken) } catch {}
-    await room.disconnect()
-    navigate('/home', { replace: true })
-  }, [room, navigate, meetingId, accessToken])
+    onRoomEnded?.()
+    setEnding(false)
+  }, [meetingId, accessToken, onRoomEnded])
 
   const toggleMic    = () => localParticipant?.setMicrophoneEnabled(!micEnabled)
   const toggleCam    = () => localParticipant?.setCameraEnabled(!camEnabled)
-  const toggleScreen = () => localParticipant?.setScreenShareEnabled(!screenShare)
-  const togglePanel  = (name) => setPanel(p => p === name ? null : name)
+  const toggleScreen = () => localParticipant?.setScreenShareEnabled(!screenShare, {
+    audio: true,
+    selfBrowserSurface: 'include',
+  })
+  const togglePanel  = (name) => { if (name === 'chat') setChatUnread(0); setPanel(p => p === name ? null : name) }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%' }}>
@@ -198,36 +318,63 @@ function RoomInner({ roomCode, meetingId, isHost, accessToken, localUser }) {
 
         {/* Video area — shrinks when panel opens */}
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden', background: '#060810', minWidth: 0 }}>
-          <MeetGrid mirrorCamera={mirrorCamera} localUser={localUser} userInfoMap={userInfoMap} />
+          <MeetGrid localUser={localUser} userInfoMap={userInfoMap} />
+          {captionsVisible && captions.length > 0 && (
+            <SubtitleOverlay captions={captions} localUserId={localUser?.id} subtitleSize={subtitleSize} subtitleFont={subtitleFont} />
+          )}
         </div>
 
-        {/* Right panel — true layout sibling, animates width */}
+        {/* Right panel — true layout sibling */}
         <div style={{
-          width: panel ? 320 : 0,
+          width: panel ? panelWidth : 0,
           flexShrink: 0,
           overflow: 'hidden',
           background: '#0A0D18',
           borderLeft: panel ? '1px solid rgba(255,255,255,0.07)' : 'none',
           display: 'flex', flexDirection: 'column',
-          transition: 'width 0.28s cubic-bezier(0.22,1,0.36,1)',
         }}>
-          {/* Keep content mounted so animation is smooth — just hide when width=0 */}
-          <div style={{ width: 320, display: 'flex', flexDirection: 'column', height: '100%' }}>
+          <div
+            onMouseMove={e => {
+              const nearEdge = e.clientX - e.currentTarget.getBoundingClientRect().left < 10
+              e.currentTarget.style.cursor = nearEdge ? 'col-resize' : 'default'
+              e.currentTarget.style.boxShadow = nearEdge ? 'inset 3px 0 0 rgba(0,201,184,0.9)' : 'none'
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.cursor = 'default'
+              e.currentTarget.style.boxShadow = 'none'
+            }}
+            onMouseDown={e => {
+              if (e.clientX - e.currentTarget.getBoundingClientRect().left > 10) return
+              e.preventDefault()
+              const startX = e.clientX
+              const startW = panelWidth
+              const cleanup = () => {
+                document.removeEventListener('mousemove', onMove)
+                document.removeEventListener('mouseup', cleanup)
+              }
+              const onMove = mv => {
+                if (mv.buttons === 0) { cleanup(); return }
+                setPanelWidth(Math.max(240, Math.min(640, startW + startX - mv.clientX)))
+              }
+              document.addEventListener('mousemove', onMove)
+              document.addEventListener('mouseup', cleanup)
+            }}
+            style={{ width: panelWidth, display: 'flex', flexDirection: 'column', height: '100%' }}>
             <div style={{
               height: 52, flexShrink: 0,
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               padding: '0 18px', borderBottom: '1px solid rgba(255,255,255,0.06)',
             }}>
               <span style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>
-                {{ participants: 'Người tham gia', chat: 'Chat', captions: 'Phụ đề', tts: 'Text-to-speech' }[panel] ?? ''}
+                {{ participants: 'Người tham gia', chat: 'Chat', noidung: 'Nội dung cuộc họp', tts: 'Text-to-speech' }[panel] ?? ''}
               </span>
               <button onClick={() => setPanel(null)} style={{
                 width: 28, height: 28, borderRadius: 7, border: 'none',
                 background: 'rgba(255,255,255,0.06)', cursor: 'pointer',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                color: 'rgba(255,255,255,0.5)',
+                color: 'rgba(255,255,255,0.5)', transition: 'all 0.15s',
               }}
-                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.12)'; e.currentTarget.style.color = '#fff' }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,69,69,0.18)'; e.currentTarget.style.color = '#FF5555' }}
                 onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; e.currentTarget.style.color = 'rgba(255,255,255,0.5)' }}
               >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -235,11 +382,11 @@ function RoomInner({ roomCode, meetingId, isHost, accessToken, localUser }) {
                 </svg>
               </button>
             </div>
-            <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px' }}>
-              {panel === 'participants' && <ParticipantsPanel participants={participants} userInfoMap={userInfoMap} localUser={localUser} isHost={isHost} meetingId={meetingId} accessToken={accessToken} />}
-              {panel === 'captions'     && <ComingSoonPanel label="Phụ đề thời gian thực" phase="Phase 6" />}
-              {panel === 'tts'          && <ComingSoonPanel label="Text-to-speech" phase="Phase 7" />}
-              {panel === 'chat'         && <ComingSoonPanel label="Chat trong phòng" phase="Phase 6" />}
+            <div style={{ flex: 1, overflowY: panel === 'noidung' ? 'hidden' : 'auto', padding: '14px 16px', display: 'flex', flexDirection: 'column' }}>
+              {panel === 'participants' && <ParticipantsPanel participants={participants} userInfoMap={userInfoMap} localUser={localUser} hostId={hostId} isHost={isHost} meetingId={meetingId} accessToken={accessToken} waitingRequests={waitingRequests} onApprove={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} onDeny={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} waitingRoomEnabled={waitingRoomEnabled} onToggleWaitingRoom={async (v) => { setWaitingRoomEnabled(v); try { await meetingsApi.toggleWaitingRoom(meetingId, v, accessToken) } catch { setWaitingRoomEnabled(!v) } }} />}
+              {panel === 'noidung'     && <MeetingContentPanel captions={captions} ttsMessages={ttsMessages} replayLog={replayLog} userInfoMap={userInfoMap} localUser={localUser} meetingId={meetingId} accessToken={accessToken} />}
+              {panel === 'tts'         && <TtsPanel meetingId={meetingId} accessToken={accessToken} ttsMessages={ttsMessages} captionsWsRef={captionsWsRef} localParticipant={localParticipant} micEnabled={micEnabled} localUserId={localUser?.id} onReplay={msg => setReplayLog(prev => [...prev.slice(-99), { ...msg, id: Date.now() + Math.random(), timestamp_ms: Date.now(), isReplay: true }])} />}
+              {panel === 'chat'        && <ChatPanel messages={chatMessages} onSend={sendChat} localUserId={localUser?.id} />}
             </div>
           </div>
         </div>
@@ -290,17 +437,31 @@ function RoomInner({ roomCode, meetingId, isHost, accessToken, localUser }) {
         <div style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
           <IconBtn on={camEnabled}  onClick={toggleCam}    offRed><CamIcon on={camEnabled} size={20} /></IconBtn>
           <IconBtn on={micEnabled}  onClick={toggleMic}    offRed><MicIcon on={micEnabled} size={20} /></IconBtn>
+          <IconBtn
+            on={panel === 'tts'}
+            onClick={() => micEnabled ? togglePanel('tts') : null}
+            disabled={!micEnabled}
+            title={micEnabled ? 'Text-to-speech' : 'Bật mic để dùng TTS'}
+            offRed={!micEnabled}
+          ><TtsIcon /></IconBtn>
+
+          <Divider />
+
           <ScreenShareBtn
             active={screenShare}
             disabled={someoneElseSharing && !screenShare}
             onClick={toggleScreen}
           />
-
-          <Divider />
-
-          <IconBtn on={panel === 'captions'} onClick={() => togglePanel('captions')}><CaptionIcon /></IconBtn>
-          <IconBtn on={panel === 'tts'}      onClick={() => togglePanel('tts')}><TtsIcon /></IconBtn>
-          <IconBtn on={panel === 'chat'}     onClick={() => togglePanel('chat')}><ChatIcon /></IconBtn>
+          <IconBtn on={captionsVisible} onClick={() => setCaptionsVisible(v => !v)} offRed={!captionsVisible} title="Hiện phụ đề"><CaptionIcon on={captionsVisible} /></IconBtn>
+          <IconBtn on={panel === 'noidung'} onClick={() => togglePanel('noidung')} title="Nội dung cuộc họp"><TranscriptIcon /></IconBtn>
+          <div style={{ position: 'relative', display: 'inline-flex' }}>
+            <IconBtn on={panel === 'chat'} onClick={() => togglePanel('chat')}><ChatIcon /></IconBtn>
+            {chatUnread > 0 && (
+              <div style={{ position: 'absolute', top: -3, right: -3, minWidth: 15, height: 15, borderRadius: 8, background: '#EF4444', color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px', pointerEvents: 'none', letterSpacing: 0 }}>
+                {chatUnread > 99 ? '99+' : chatUnread}
+              </div>
+            )}
+          </div>
           <IconBtn on={false} onClick={() => setSettingsOpen(true)} title="Cài đặt">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3"/>
@@ -328,7 +489,7 @@ function RoomInner({ roomCode, meetingId, isHost, accessToken, localUser }) {
           {/* Participants count — clickable */}
           <button onClick={() => togglePanel('participants')} style={{
             display: 'flex', alignItems: 'center', gap: 6,
-            padding: '7px 14px', borderRadius: 10,
+            padding: '7px 14px', borderRadius: 10, position: 'relative',
             border: `1px solid ${panel === 'participants' ? 'rgba(167,139,250,0.35)' : 'rgba(167,139,250,0.18)'}`,
             background: panel === 'participants' ? 'rgba(167,139,250,0.15)' : 'rgba(167,139,250,0.08)',
             cursor: 'pointer', color: '#A78BFA', transition: 'all 0.15s',
@@ -338,6 +499,17 @@ function RoomInner({ roomCode, meetingId, isHost, accessToken, localUser }) {
               <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
             </svg>
             <span style={{ fontSize: 14, fontWeight: 700, minWidth: 14, textAlign: 'center' }}>{participants.length}</span>
+            {isHost && waitingRequests.length > 0 && (
+              <div style={{
+                position: 'absolute', top: -6, right: -6,
+                width: 18, height: 18, borderRadius: '50%',
+                background: '#FF6B8A', border: '2px solid #0A0D18',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 10, fontWeight: 800, color: '#fff',
+              }}>
+                {waitingRequests.length}
+              </div>
+            )}
           </button>
 
           <Divider />
@@ -354,76 +526,9 @@ function RoomInner({ roomCode, meetingId, isHost, accessToken, localUser }) {
 
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
 
-      {/* Meeting ended overlay */}
-      {roomEnded && (
-        <div style={{
-          position: 'absolute', inset: 0, zIndex: 100,
-          background: 'rgba(6,8,16,0.92)',
-          backdropFilter: 'blur(20px)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontFamily: '"Be Vietnam Pro", sans-serif',
-          animation: 'panelIn 0.3s cubic-bezier(0.22,1,0.36,1)',
-        }}>
-          <div style={{
-            display: 'flex', flexDirection: 'column', alignItems: 'center',
-            gap: 0, textAlign: 'center', maxWidth: 360, padding: '0 24px',
-          }}>
-            {/* Icon */}
-            <div style={{
-              width: 64, height: 64, borderRadius: 20, marginBottom: 24,
-              background: 'rgba(255,107,138,0.1)', border: '1px solid rgba(255,107,138,0.2)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#FF6B8A" strokeWidth="2" strokeLinecap="round">
-                <path d="M18 6L6 18M6 6l12 12"/>
-              </svg>
-            </div>
+      {/* Left overlay */}
+      {hasLeft && <LeftOverlay roomCode={roomCode} navigate={navigate} />}
 
-            <h2 style={{ margin: '0 0 10px', fontSize: 26, fontWeight: 900, color: '#fff', letterSpacing: '-0.5px' }}>
-              Cuộc họp đã kết thúc
-            </h2>
-            <p style={{ margin: '0 0 36px', fontSize: 14, color: 'rgba(255,255,255,0.38)', lineHeight: 1.6 }}>
-              Chủ phòng đã kết thúc cuộc họp này.
-            </p>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
-              <button
-                onClick={() => navigate(`/library/${meetingId}`)}
-                style={{
-                  width: '100%', padding: '14px', borderRadius: 13, border: 'none',
-                  background: 'linear-gradient(135deg, #A78BFA, #7C3AED)',
-                  color: '#fff', fontSize: 14, fontWeight: 800,
-                  cursor: 'pointer', fontFamily: 'inherit',
-                  boxShadow: '0 6px 20px rgba(124,58,237,0.3)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                }}
-              >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                  <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-                  <polyline points="14 2 14 8 20 8"/>
-                  <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
-                </svg>
-                Xem tóm tắt
-              </button>
-
-              <button
-                onClick={() => navigate('/home', { replace: true })}
-                style={{
-                  width: '100%', padding: '13px', borderRadius: 13,
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  background: 'rgba(255,255,255,0.05)',
-                  color: 'rgba(255,255,255,0.6)', fontSize: 14, fontWeight: 700,
-                  cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s',
-                }}
-                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.1)'; e.currentTarget.style.color = '#fff' }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = 'rgba(255,255,255,0.6)' }}
-              >
-                Về trang chủ
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Kicked overlay */}
       {wasKicked && (
@@ -494,6 +599,68 @@ function RoomInner({ roomCode, meetingId, isHost, accessToken, localUser }) {
         </div>
       )}
 
+      {/* Duplicate session overlay */}
+      {dupSession && (
+        <div style={{
+          position: 'absolute', inset: 0, zIndex: 100,
+          background: 'rgba(6,8,16,0.92)', backdropFilter: 'blur(20px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontFamily: '"Be Vietnam Pro", sans-serif',
+          animation: 'panelIn 0.3s cubic-bezier(0.22,1,0.36,1)',
+        }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', maxWidth: 380, padding: '0 24px' }}>
+            <div style={{
+              width: 64, height: 64, borderRadius: 20, marginBottom: 24,
+              background: 'rgba(96,165,250,0.1)', border: '1px solid rgba(96,165,250,0.25)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#60A5FA" strokeWidth="2" strokeLinecap="round">
+                <rect x="2" y="3" width="20" height="14" rx="2"/>
+                <line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+              </svg>
+            </div>
+            <h2 style={{ margin: '0 0 10px', fontSize: 22, fontWeight: 900, color: '#fff', letterSpacing: '-0.5px' }}>
+              Bạn đã tham gia từ thiết bị khác
+            </h2>
+            <p style={{ margin: '0 0 36px', fontSize: 14, color: 'rgba(255,255,255,0.38)', lineHeight: 1.7 }}>
+              Phiên này đã bị ngắt kết nối vì tài khoản của bạn vừa tham gia cuộc họp từ một tab hoặc thiết bị khác.
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
+              <button
+                onClick={() => navigate(`/meeting/${roomCode}`, { replace: true })}
+                style={{
+                  width: '100%', padding: '14px', borderRadius: 13, border: 'none',
+                  background: 'linear-gradient(135deg, #60A5FA, #3B82F6)',
+                  color: '#fff', fontSize: 14, fontWeight: 800,
+                  cursor: 'pointer', fontFamily: 'inherit',
+                  boxShadow: '0 6px 20px rgba(59,130,246,0.3)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                }}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/>
+                </svg>
+                Tham gia lại tại đây
+              </button>
+              <button
+                onClick={() => navigate('/home', { replace: true })}
+                style={{
+                  width: '100%', padding: '13px', borderRadius: 13,
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  background: 'rgba(255,255,255,0.05)',
+                  color: 'rgba(255,255,255,0.6)', fontSize: 14, fontWeight: 700,
+                  cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.1)'; e.currentTarget.style.color = '#fff' }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = 'rgba(255,255,255,0.6)' }}
+              >
+                Về trang chủ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes screenPulse {
@@ -504,13 +671,243 @@ function RoomInner({ roomCode, meetingId, isHost, accessToken, localUser }) {
           0%, 100% { opacity: 1; transform: scale(1); }
           50%       { opacity: 0.4; transform: scale(1.4); }
         }
+        @keyframes panelIn {
+          from { opacity: 0; transform: translateX(18px); }
+          to   { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes panelSlideIn {
+          from { opacity: 0; transform: translateX(100%); }
+          to   { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes captionIn {
+          from { opacity: 0; transform: translateY(6px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
       `}</style>
     </div>
   )
 }
 
+/* ── Left overlay ───────────────────────────────────────────────────────── */
+function LeftOverlay({ roomCode, navigate }) {
+  const [countdown, setCountdown] = useState(60)
+
+  useEffect(() => {
+    const iv = setInterval(() => {
+      setCountdown(s => {
+        if (s <= 1) { clearInterval(iv); navigate('/home', { replace: true }); return 0 }
+        return s - 1
+      })
+    }, 1000)
+    return () => clearInterval(iv)
+  }, [navigate])
+
+  const handleRejoin = () => {
+    navigate(`/meeting/${roomCode}`)
+  }
+
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, zIndex: 100,
+      background: 'rgba(6,8,16,0.94)', backdropFilter: 'blur(22px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontFamily: '"Be Vietnam Pro", sans-serif',
+      animation: 'panelIn 0.3s cubic-bezier(0.22,1,0.36,1)',
+    }}>
+      <div style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        textAlign: 'center', maxWidth: 360, padding: '0 24px',
+      }}>
+        {/* Icon */}
+        <div style={{
+          width: 64, height: 64, borderRadius: 20, marginBottom: 24,
+          background: 'rgba(0,201,184,0.08)', border: '1px solid rgba(0,201,184,0.18)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#00C9B8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/>
+            <polyline points="16 17 21 12 16 7"/>
+            <line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+        </div>
+
+        <h2 style={{ margin: '0 0 8px', fontSize: 26, fontWeight: 900, color: '#fff', letterSpacing: '-0.5px' }}>
+          Bạn đã rời cuộc họp
+        </h2>
+        <p style={{ margin: '0 0 8px', fontSize: 14, color: 'rgba(255,255,255,0.38)', lineHeight: 1.6 }}>
+          Phòng <span style={{ color: 'rgba(255,255,255,0.65)', fontWeight: 700 }}>{roomCode}</span>
+        </p>
+
+        {/* Countdown ring */}
+        <div style={{ margin: '16px 0 28px', position: 'relative', width: 56, height: 56 }}>
+          <svg width="56" height="56" viewBox="0 0 56 56" style={{ transform: 'rotate(-90deg)' }}>
+            <circle cx="28" cy="28" r="24" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="3" />
+            <circle cx="28" cy="28" r="24" fill="none" stroke="#00C9B8" strokeWidth="3"
+              strokeDasharray={`${2 * Math.PI * 24}`}
+              strokeDashoffset={`${2 * Math.PI * 24 * (1 - countdown / 60)}`}
+              strokeLinecap="round"
+              style={{ transition: 'stroke-dashoffset 1s linear' }}
+            />
+          </svg>
+          <span style={{
+            position: 'absolute', inset: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 16, fontWeight: 800, color: '#fff',
+            fontVariantNumeric: 'tabular-nums',
+          }}>{countdown}</span>
+        </div>
+
+        <p style={{ margin: '0 0 20px', fontSize: 12, color: 'rgba(255,255,255,0.28)' }}>
+          Tự động về trang chủ sau {countdown}s
+        </p>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
+          <button
+            onClick={handleRejoin}
+            style={{
+              width: '100%', padding: '14px', borderRadius: 13, border: 'none',
+              background: 'linear-gradient(135deg, #00C9B8, #009E8A)',
+              color: '#fff', fontSize: 14, fontWeight: 800,
+              cursor: 'pointer', fontFamily: 'inherit',
+              boxShadow: '0 6px 20px rgba(0,201,184,0.3)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            }}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M15 3h4a2 2 0 012 2v16a2 2 0 01-2 2h-4"/>
+              <polyline points="10 17 15 12 10 7"/>
+              <line x1="15" y1="12" x2="3" y2="12"/>
+            </svg>
+            Tham gia lại
+          </button>
+
+          <button
+            onClick={() => navigate('/home', { replace: true })}
+            style={{
+              width: '100%', padding: '13px', borderRadius: 13,
+              border: '1px solid rgba(255,255,255,0.1)',
+              background: 'rgba(255,255,255,0.05)',
+              color: 'rgba(255,255,255,0.6)', fontSize: 14, fontWeight: 700,
+              cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.1)'; e.currentTarget.style.color = '#fff' }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = 'rgba(255,255,255,0.6)' }}
+          >
+            Về trang chủ
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ── Room ended overlay (with countdown) ───────────────────────────────── */
+function RoomEndedOverlay({ meetingId, navigate }) {
+  const [countdown, setCountdown] = useState(60)
+
+  useEffect(() => {
+    const iv = setInterval(() => {
+      setCountdown(s => {
+        if (s <= 1) { clearInterval(iv); navigate('/home', { replace: true }); return 0 }
+        return s - 1
+      })
+    }, 1000)
+    return () => clearInterval(iv)
+  }, [navigate])
+
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, zIndex: 100,
+      background: 'rgba(6,8,16,0.94)', backdropFilter: 'blur(22px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontFamily: '"Be Vietnam Pro", sans-serif',
+      animation: 'panelIn 0.3s cubic-bezier(0.22,1,0.36,1)',
+    }}>
+      <div style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        textAlign: 'center', maxWidth: 360, padding: '0 24px',
+      }}>
+        <div style={{
+          width: 64, height: 64, borderRadius: 20, marginBottom: 24,
+          background: 'rgba(255,107,138,0.1)', border: '1px solid rgba(255,107,138,0.2)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#FF6B8A" strokeWidth="2" strokeLinecap="round">
+            <path d="M18 6L6 18M6 6l12 12"/>
+          </svg>
+        </div>
+
+        <h2 style={{ margin: '0 0 8px', fontSize: 26, fontWeight: 900, color: '#fff', letterSpacing: '-0.5px' }}>
+          Cuộc họp đã kết thúc
+        </h2>
+        <p style={{ margin: '0 0 16px', fontSize: 14, color: 'rgba(255,255,255,0.38)', lineHeight: 1.6 }}>
+          Chủ phòng đã kết thúc cuộc họp này.
+        </p>
+
+        {/* Countdown ring */}
+        <div style={{ margin: '0 0 8px', position: 'relative', width: 56, height: 56 }}>
+          <svg width="56" height="56" viewBox="0 0 56 56" style={{ transform: 'rotate(-90deg)' }}>
+            <circle cx="28" cy="28" r="24" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="3" />
+            <circle cx="28" cy="28" r="24" fill="none" stroke="#FF6B8A" strokeWidth="3"
+              strokeDasharray={`${2 * Math.PI * 24}`}
+              strokeDashoffset={`${2 * Math.PI * 24 * (1 - countdown / 60)}`}
+              strokeLinecap="round"
+              style={{ transition: 'stroke-dashoffset 1s linear' }}
+            />
+          </svg>
+          <span style={{
+            position: 'absolute', inset: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 16, fontWeight: 800, color: '#fff',
+            fontVariantNumeric: 'tabular-nums',
+          }}>{countdown}</span>
+        </div>
+
+        <p style={{ margin: '0 0 24px', fontSize: 12, color: 'rgba(255,255,255,0.28)' }}>
+          Tự động về trang chủ sau {countdown}s
+        </p>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
+          <button
+            onClick={() => navigate(`/library/${meetingId}`)}
+            style={{
+              width: '100%', padding: '14px', borderRadius: 13, border: 'none',
+              background: 'linear-gradient(135deg, #A78BFA, #7C3AED)',
+              color: '#fff', fontSize: 14, fontWeight: 800,
+              cursor: 'pointer', fontFamily: 'inherit',
+              boxShadow: '0 6px 20px rgba(124,58,237,0.3)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            }}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+            </svg>
+            Xem tóm tắt
+          </button>
+          <button
+            onClick={() => navigate('/home', { replace: true })}
+            style={{
+              width: '100%', padding: '13px', borderRadius: 13,
+              border: '1px solid rgba(255,255,255,0.1)',
+              background: 'rgba(255,255,255,0.05)',
+              color: 'rgba(255,255,255,0.6)', fontSize: 14, fontWeight: 700,
+              cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.1)'; e.currentTarget.style.color = '#fff' }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = 'rgba(255,255,255,0.6)' }}
+          >
+            Về trang chủ
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ── Custom dynamic grid ────────────────────────────────────────────────── */
-function MeetGrid({ mirrorCamera, localUser, userInfoMap }) {
+function MeetGrid({ localUser, userInfoMap }) {
   const [page, setPage] = useState(0)
   const [visible, setVisible] = useState(true)
   const [layoutKey, setLayoutKey] = useState(0)
@@ -555,7 +952,7 @@ function MeetGrid({ mirrorCamera, localUser, userInfoMap }) {
         }}>
           {cameraTracks.map(track => (
             <div key={track.participant.identity} style={{ width: '100%', aspectRatio: '16/9', flexShrink: 0 }}>
-              <MeetTile track={track} mirrorCamera={mirrorCamera} localUser={localUser} userInfoMap={userInfoMap} avatarSize={48} />
+              <MeetTile track={track} localUser={localUser} userInfoMap={userInfoMap} avatarSize={48} />
             </div>
           ))}
         </div>
@@ -602,7 +999,7 @@ function MeetGrid({ mirrorCamera, localUser, userInfoMap }) {
                     flexShrink: 0, height: '100%',
                   }}
                 >
-                  <MeetTile track={track} mirrorCamera={mirrorCamera} localUser={localUser} userInfoMap={userInfoMap} avatarSize={avatarSize} />
+                  <MeetTile track={track} localUser={localUser} userInfoMap={userInfoMap} avatarSize={avatarSize} />
                 </div>
               ))}
             </div>
@@ -701,7 +1098,8 @@ function ScreenShareTile({ track }) {
 }
 
 /* ── Participant tile ────────────────────────────────────────────────────── */
-function MeetTile({ track, mirrorCamera, localUser, userInfoMap, avatarSize = 120 }) {
+function MeetTile({ track, localUser, userInfoMap, avatarSize = 120 }) {
+  const mirrorCamera = useStore(s => s.mirrorCamera)
   const participant = track.participant
   const isVideoOn   = !!track.publication && !track.publication.isMuted
   const isSpeaking  = participant.isSpeaking
@@ -783,8 +1181,22 @@ function MeetTile({ track, mirrorCamera, localUser, userInfoMap, avatarSize = 12
 }
 
 /* ── Participants panel ─────────────────────────────────────────────────── */
-function ParticipantsPanel({ participants, userInfoMap, localUser, isHost, meetingId, accessToken }) {
+function ParticipantsPanel({ participants, userInfoMap, localUser, hostId, isHost, meetingId, accessToken, waitingRequests = [], onApprove, onDeny, waitingRoomEnabled = true, onToggleWaitingRoom }) {
   const [query, setQuery] = useState('')
+
+  async function handleApprove(req) {
+    try {
+      await meetingsApi.approve(meetingId, req.request_id, accessToken)
+      onApprove?.(req.request_id)
+    } catch {}
+  }
+
+  async function handleDeny(req) {
+    try {
+      await meetingsApi.deny(meetingId, req.request_id, accessToken)
+      onDeny?.(req.request_id)
+    } catch {}
+  }
 
   const normalize = (str) =>
     str.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'd').toLowerCase()
@@ -796,6 +1208,100 @@ function ParticipantsPanel({ participants, userInfoMap, localUser, isHost, meeti
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+
+      {/* Waiting room toggle — host only */}
+      {isHost && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '10px 14px', borderRadius: 12,
+          background: 'rgba(255,255,255,0.03)',
+          border: '1px solid rgba(255,255,255,0.07)',
+        }}>
+          <div>
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: 'rgba(255,255,255,0.8)' }}>Phòng chờ</p>
+            <p style={{ margin: '2px 0 0', fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>
+              {waitingRoomEnabled ? 'Phải được duyệt để vào' : 'Ai cũng vào được'}
+            </p>
+          </div>
+          <button
+            onClick={() => onToggleWaitingRoom?.(!waitingRoomEnabled)}
+            style={{
+              width: 42, height: 24, borderRadius: 12, border: 'none',
+              padding: 2, cursor: 'pointer', flexShrink: 0,
+              background: waitingRoomEnabled ? '#00C9B8' : 'rgba(255,255,255,0.12)',
+              transition: 'background 0.2s',
+              display: 'flex', alignItems: 'center',
+              justifyContent: waitingRoomEnabled ? 'flex-end' : 'flex-start',
+            }}
+          >
+            <div style={{
+              width: 20, height: 20, borderRadius: '50%',
+              background: '#fff',
+              boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+              transition: 'transform 0.2s',
+            }} />
+          </button>
+        </div>
+      )}
+
+      {/* Waiting room requests — host only */}
+      {isHost && waitingRequests.length > 0 && (
+        <div style={{ marginBottom: 4 }}>
+          <p style={{ margin: '0 0 8px', fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#FF6B8A' }}>
+            Đang chờ duyệt · {waitingRequests.length}
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {waitingRequests.map(req => (
+              <div key={req.request_id} style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                padding: '10px 12px', borderRadius: 12,
+                background: 'rgba(255,107,138,0.06)',
+                border: '1px solid rgba(255,107,138,0.18)',
+                animation: 'captionIn 0.2s ease',
+              }}>
+                <UserAvatar name={req.display_name} avatarUrl={req.avatar_url || ''} size={32} />
+                <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.82)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {req.display_name}
+                </span>
+                <button
+                  onClick={() => handleApprove(req)}
+                  title="Chấp nhận"
+                  style={{
+                    width: 30, height: 30, borderRadius: 8, border: 'none', flexShrink: 0,
+                    background: 'rgba(0,201,184,0.15)', color: '#00C9B8',
+                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'all 0.15s',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(0,201,184,0.3)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'rgba(0,201,184,0.15)'}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                </button>
+                <button
+                  onClick={() => handleDeny(req)}
+                  title="Từ chối"
+                  style={{
+                    width: 30, height: 30, borderRadius: 8, border: 'none', flexShrink: 0,
+                    background: 'rgba(255,107,138,0.12)', color: '#FF6B8A',
+                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'all 0.15s',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,107,138,0.25)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,107,138,0.12)'}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </div>
+            ))}
+          </div>
+          <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '10px 0 2px' }} />
+        </div>
+      )}
+
       {/* Search */}
       <div style={{ position: 'relative' }}>
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="2" strokeLinecap="round"
@@ -830,13 +1336,21 @@ function ParticipantsPanel({ participants, userInfoMap, localUser, isHost, meeti
           <div key={p.identity} style={{
             display: 'flex', alignItems: 'center', gap: 10,
             padding: '9px 12px', borderRadius: 10,
-            background: 'rgba(255,255,255,0.04)',
-            border: '1px solid rgba(255,255,255,0.05)',
+            background: p.identity === hostId ? 'rgba(251,191,36,0.05)' : 'rgba(255,255,255,0.04)',
+            border: `1px solid ${p.identity === hostId ? 'rgba(251,191,36,0.15)' : 'rgba(255,255,255,0.05)'}`,
           }}>
             <UserAvatar name={name} avatarUrl={avatarUrl} size={34} />
-            <span style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.82)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {name}
-            </span>
+            <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.82)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {name}
+              </span>
+              {p.identity === hostId && (
+                <svg width="15" height="15" viewBox="0 0 24 24" style={{ flexShrink: 0 }}>
+                  <path fill="#FBBF24" fillOpacity="0.9" d="M4 15 L2 5 L9 10 L12 2 L15 10 L22 5 L20 15 Z"/>
+                  <rect fill="#FBBF24" x="4" y="16.5" width="16" height="1.8" rx="0.9"/>
+                </svg>
+              )}
+            </div>
             {p.isSpeaking && (
               <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#00C9B8', flexShrink: 0 }} />
             )}
@@ -960,6 +1474,1018 @@ function KickBtn({ participantId, meetingId, accessToken, name }) {
   )
 }
 
+/* ── Subtitle overlay ───────────────────────────────────────────────────── */
+const SUBTITLE_SIZE = { small: 16, medium: 20, large: 26, xl: 34 }
+const SUBTITLE_FONT = { system: 'inherit', mono: '"JetBrains Mono", monospace' }
+
+function SubtitleOverlay({ captions, localUserId, subtitleSize, subtitleFont }) {
+  const others   = captions.filter(c => c.speaker_id !== localUserId)
+  const latest   = others[others.length - 1]
+  const fontSize  = SUBTITLE_SIZE[subtitleSize]  ?? 20
+  const fontFamily = SUBTITLE_FONT[subtitleFont] ?? 'inherit'
+
+  if (!latest) return null
+  const color = speakerColor(latest.speaker_id)
+  return (
+    <div style={{
+      position: 'absolute', bottom: 24, left: '50%', transform: 'translateX(-50%)',
+      zIndex: 10, width: '84%', maxWidth: 780,
+      pointerEvents: 'none',
+    }}>
+      <div key={latest.id} style={{
+        display: 'flex', alignItems: 'baseline', gap: 10,
+        background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(18px)',
+        borderRadius: 10, padding: '9px 20px',
+        animation: 'captionIn 0.18s ease',
+      }}>
+        <span style={{
+          fontSize: fontSize * 0.62, fontWeight: 800, color,
+          fontFamily, whiteSpace: 'nowrap', flexShrink: 0,
+          letterSpacing: '0.02em',
+        }}>
+          {latest.speaker_name}
+        </span>
+        <span style={{ fontSize, fontWeight: 500, color: '#fff', lineHeight: 1.55, fontFamily }}>
+          {latest.text}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+/* ── Speaker color ──────────────────────────────────────────────────────── */
+const SPEAKER_COLORS = ['#00C9B8','#A78BFA','#60A5FA','#FB923C','#34D399','#F472B6','#FBBF24','#818CF8']
+function speakerColor(id = '') {
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
+  return SPEAKER_COLORS[h % SPEAKER_COLORS.length]
+}
+
+/* ── Meeting content panel ──────────────────────────────────────────────── */
+function MeetingContentPanel({ captions, ttsMessages, replayLog = [], userInfoMap, localUser, meetingId, accessToken }) {
+  const bottomRef  = useRef(null)
+  const [autoScroll, setAutoScroll] = useState(true)
+  const [summary,        setSummary]        = useState(null)  // string | null
+  const [summaryTime,    setSummaryTime]    = useState(null)
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  const [summaryError,   setSummaryError]   = useState('')
+  const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8001'
+
+  useEffect(() => {
+    if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [captions.length, ttsMessages.length, replayLog.length, autoScroll])
+
+  async function handleSummarize() {
+    setSummaryLoading(true)
+    setSummaryError('')
+    try {
+      const res = await fetch(`${BASE}/meetings/${meetingId}/summarize`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      })
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}))
+        throw new Error(e.detail || 'Tóm tắt thất bại')
+      }
+      const data = await res.json()
+      setSummary(data.summary)
+      setSummaryTime(new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }))
+    } catch (e) {
+      setSummaryError(e.message)
+    } finally {
+      setSummaryLoading(false)
+    }
+  }
+
+  function onScroll(e) {
+    const el = e.currentTarget
+    setAutoScroll(el.scrollHeight - el.scrollTop - el.clientHeight < 60)
+  }
+
+  if (captions.length === 0 && ttsMessages.length === 0 && replayLog.length === 0) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', minHeight: 200, gap: 14 }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {[0, 1, 2].map(i => (
+            <div key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: '#00C9B8', animation: `liveDot 1.4s ease-in-out ${i * 0.22}s infinite` }} />
+          ))}
+        </div>
+        <p style={{ margin: 0, fontSize: 13, color: 'rgba(255,255,255,0.28)', textAlign: 'center' }}>Đang lắng nghe cuộc họp…</p>
+      </div>
+    )
+  }
+
+  // Merge captions + TTS, sort by time, then group consecutive same-speaker runs
+  const allItems = [
+    ...captions.map(c => ({ ...c, isTts: false })),
+    ...ttsMessages.map(m => ({ ...m, isTts: true })),
+    ...replayLog.map(r => ({ ...r, isTts: true })),
+  ].sort((a, b) => a.timestamp_ms - b.timestamp_ms)
+
+  const groups = []
+  allItems.forEach(c => {
+    const last = groups[groups.length - 1]
+    if (last && last.speaker_id === c.speaker_id) {
+      last.items.push(c)
+    } else {
+      groups.push({ speaker_id: c.speaker_id, speaker_name: c.speaker_name, color: speakerColor(c.speaker_id), items: [c] })
+    }
+  })
+
+  const fmt = (ms) => new Date(ms).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+
+      {/* AI summary card — shown when summary exists */}
+      {summary && (
+        <div style={{
+          flexShrink: 0, marginBottom: 14, borderRadius: 14, overflow: 'hidden',
+          background: 'linear-gradient(160deg, rgba(109,40,217,0.14) 0%, rgba(79,20,180,0.08) 100%)',
+          border: '1px solid rgba(167,139,250,0.28)',
+          boxShadow: '0 4px 28px rgba(109,40,217,0.14)',
+          animation: 'captionIn 0.25s cubic-bezier(0.22,1,0.36,1)',
+        }}>
+
+          <div style={{ padding: '11px 13px 13px' }}>
+            {/* Header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                <div style={{
+                  width: 24, height: 24, borderRadius: 7, flexShrink: 0,
+                  background: 'linear-gradient(135deg, rgba(124,58,237,0.5), rgba(167,139,250,0.3))',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#DDD6FE" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/>
+                  </svg>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: '#C4B5FD', letterSpacing: '0.06em', lineHeight: 1 }}>TÓM TẮT AI</div>
+                  <div style={{ fontSize: 9, color: 'rgba(167,139,250,0.45)', marginTop: 2 }}>Cập nhật lúc {summaryTime}</div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 5 }}>
+                {/* Close */}
+                <button onClick={() => setSummary(null)} title="Ẩn" style={{
+                  width: 24, height: 24, borderRadius: 7, border: 'none',
+                  background: 'rgba(167,139,250,0.1)', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: 'rgba(167,139,250,0.5)', transition: 'all 0.15s',
+                }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,69,69,0.15)'; e.currentTarget.style.color = '#FF6B8A' }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'rgba(167,139,250,0.1)'; e.currentTarget.style.color = 'rgba(167,139,250,0.5)' }}
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+            </div>
+
+            {/* Divider */}
+            <div style={{ height: 1, background: 'rgba(167,139,250,0.12)', marginBottom: 10 }} />
+
+            {/* Bullet points with inline bold rendering */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              {summary.split('\n').filter(l => l.trim()).map((line, i) => {
+                const text = line.replace(/^(\d+\.|[-•*])\s*/, '')
+                const parts = text.split(/\*\*(.*?)\*\*/g)
+                return (
+                  <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
+                    <div style={{
+                      flexShrink: 0, marginTop: 6,
+                      width: 5, height: 5, borderRadius: '50%',
+                      background: 'linear-gradient(135deg, #A78BFA, #7C3AED)',
+                    }} />
+                    <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.65, color: 'rgba(255,255,255,0.78)' }}>
+                      {parts.map((p, j) => j % 2 === 1
+                        ? <strong key={j} style={{ color: '#E9D5FF', fontWeight: 700 }}>{p}</strong>
+                        : p
+                      )}
+                    </p>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Summarize button — pinned below card */}
+      <div style={{ flexShrink: 0, marginBottom: 12 }}>
+        <button
+          onClick={handleSummarize}
+          disabled={summaryLoading}
+          style={{
+            width: '100%', padding: '9px 14px', borderRadius: 10,
+            background: 'transparent',
+            border: `1px dashed ${summaryLoading ? 'rgba(167,139,250,0.15)' : 'rgba(167,139,250,0.3)'}`,
+            color: summaryLoading ? 'rgba(167,139,250,0.35)' : 'rgba(167,139,250,0.7)',
+            cursor: summaryLoading ? 'default' : 'pointer',
+            fontFamily: 'inherit', fontSize: 12, fontWeight: 600,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+            transition: 'all 0.15s',
+          }}
+          onMouseEnter={e => { if (!summaryLoading) { e.currentTarget.style.background = 'rgba(167,139,250,0.06)'; e.currentTarget.style.color = '#C4B5FD'; e.currentTarget.style.borderColor = 'rgba(167,139,250,0.5)' }}}
+          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(167,139,250,0.7)'; e.currentTarget.style.borderColor = 'rgba(167,139,250,0.3)' }}
+        >
+          {summaryLoading
+            ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ animation: 'spin 0.7s linear infinite' }}><path d="M12 2a10 10 0 0 1 10 10"/></svg>
+            : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
+          }
+          {summaryLoading ? 'Đang phân tích…' : summary ? 'Tóm tắt lại' : 'Tóm tắt nội dung'}
+        </button>
+        {summaryError && (
+          <p style={{ margin: '6px 0 0', fontSize: 11, color: '#F87171', textAlign: 'center' }}>{summaryError}</p>
+        )}
+      </div>
+
+      {/* Transcript scroll area */}
+      <div onScroll={onScroll} style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
+      {groups.map((g, gi) => (
+        <div key={`${g.speaker_id}-${gi}`} style={{
+          marginBottom: 10,
+          animation: g.items[0]?.is_history ? 'none' : 'captionIn 0.2s ease',
+        }}>
+          {/* Speaker header */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 7 }}>
+            <UserAvatar
+              name={g.speaker_name}
+              avatarUrl={g.speaker_id === localUser?.id ? (localUser?.avatar_url || '') : (userInfoMap?.[g.speaker_id]?.avatar_url || '')}
+              size={30}
+            />
+            <span style={{ fontSize: 13, fontWeight: 700, color: g.color, flex: 1 }}>{g.speaker_name}</span>
+          </div>
+
+          {/* Messages */}
+          <div style={{ paddingLeft: 39, display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {g.items.map((c, ci) => {
+              const isLatest = ci === g.items.length - 1 && gi === groups.length - 1
+              return (
+                <div key={c.id} style={{
+                  padding: '6px 10px', borderRadius: 8,
+                  background: isLatest ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.02)',
+                  border: `1px solid ${isLatest ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.03)'}`,
+                  display: 'flex', alignItems: 'flex-start', gap: 8,
+                }}>
+                  {c.isTts && (
+                    <span style={{
+                      marginTop: 3, flexShrink: 0,
+                      fontSize: 9, fontWeight: 700, letterSpacing: '0.05em',
+                      color: '#A78BFA', background: 'rgba(167,139,250,0.12)',
+                      border: '1px solid rgba(167,139,250,0.25)',
+                      borderRadius: 4, padding: '1px 5px',
+                    }}>TTS</span>
+                  )}
+                  <p style={{
+                    margin: 0, flex: 1, fontSize: 13.5, lineHeight: 1.65,
+                    color: isLatest ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.58)',
+                    fontStyle: c.isTts ? 'italic' : 'normal',
+                  }}>
+                    {c.text}
+                  </p>
+                  <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.18)', flexShrink: 0, marginTop: 4, width: 34, textAlign: 'right' }}>
+                    {fmt(c.timestamp_ms)}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+
+          {/* Divider between groups */}
+          {gi < groups.length - 1 && (
+            <div style={{ marginTop: 12, marginLeft: 39, height: 1, background: 'rgba(255,255,255,0.04)' }} />
+          )}
+        </div>
+      ))}
+
+      {!autoScroll && (
+        <button
+          onClick={() => { setAutoScroll(true); bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }}
+          style={{
+            position: 'sticky', bottom: 8, alignSelf: 'center',
+            padding: '5px 14px', borderRadius: 20,
+            border: '1px solid rgba(0,201,184,0.3)',
+            background: 'rgba(0,201,184,0.1)', color: '#00C9B8',
+            fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+          }}
+        >↓ Mới nhất</button>
+      )}
+      <div ref={bottomRef} />
+      </div>{/* end scroll area */}
+
+    </div>
+  )
+}
+
+/* ── Chat panel ─────────────────────────────────────────────────────────── */
+
+/* Singleton — markdown libs load once for the lifetime of the page */
+const _md = { loaded: false, Md: null, plugins: null, _q: [] }
+function _loadMd(cb) {
+  if (_md.loaded) { cb(); return }
+  _md._q.push(cb)
+  if (_md._q.length > 1) return
+  Promise.all([
+    import('react-markdown'),
+    import('remark-gfm'),
+    import('remark-math'),
+    import('rehype-katex'),
+    import('rehype-highlight'),
+    import('katex/dist/katex.min.css'),
+    import('highlight.js/styles/atom-one-dark.min.css'),
+  ]).then(([md, gfm, rm, rk, rh]) => {
+    _md.Md = md.default
+    _md.plugins = { gfm: gfm.default, math: rm.default, katex: rk.default, highlight: rh.default }
+    _md.loaded = true
+    _md._q.forEach(f => f()); _md._q = []
+  }).catch(() => {
+    _md.loaded = true
+    _md._q.forEach(f => f()); _md._q = []
+  })
+}
+
+function _autoLink(text) {
+  return text.replace(/(^|[\s,])(https?:\/\/[^\s<>"')\]]+)/g, (_, pre, url) => `${pre}[${url}](${url})`)
+}
+
+const CHAT_COLORS = ['#00C9B8', '#A78BFA', '#FB923C', '#34D399', '#60A5FA', '#F472B6', '#FCD34D']
+function senderColor(name = '') {
+  let h = 5381
+  for (let i = 0; i < name.length; i++) h = (h * 33 ^ name.charCodeAt(i)) >>> 0
+  return CHAT_COLORS[h % CHAT_COLORS.length]
+}
+function isSameGroup(a, b) {
+  return !!a && !!b && a.sender_id === b.sender_id && b.timestamp_ms - a.timestamp_ms < 3 * 60 * 1000
+}
+
+function LinkConfirmModal({ url, onConfirm, onCancel }) {
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 999,
+      background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(6px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontFamily: '"Be Vietnam Pro", sans-serif',
+      animation: 'modalBgIn 0.2s ease',
+    }} onClick={onCancel}>
+      <style>{`
+        @keyframes modalBgIn { from { opacity: 0 } to { opacity: 1 } }
+        @keyframes modalIn { from { opacity: 0; transform: scale(0.95) translateY(10px) } to { opacity: 1; transform: scale(1) translateY(0) } }
+      `}</style>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: '#0F1220', borderRadius: 16,
+        border: '1px solid rgba(255,255,255,0.1)',
+        boxShadow: '0 24px 60px rgba(0,0,0,0.7)',
+        padding: '24px 24px 20px', width: 360, maxWidth: '90vw',
+        animation: 'modalIn 0.22s cubic-bezier(0.22,1,0.36,1)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+          <div style={{
+            width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+            background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.25)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="2" strokeLinecap="round">
+              <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>
+            </svg>
+          </div>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#fff', marginBottom: 2 }}>Mở liên kết ngoài?</div>
+            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>Bạn sắp rời khỏi Syltalky</div>
+          </div>
+        </div>
+        <div style={{
+          padding: '9px 12px', borderRadius: 8, marginBottom: 18,
+          background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)',
+        }}>
+          <span style={{
+            fontSize: 12, color: '#60A5FA', wordBreak: 'break-all',
+            display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+          }}>{url}</span>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={onCancel} style={{
+            flex: 1, padding: '9px 0', borderRadius: 9, fontFamily: 'inherit',
+            border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)',
+            color: 'rgba(255,255,255,0.6)', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+          }}>Huỷ</button>
+          <button onClick={onConfirm} style={{
+            flex: 1, padding: '9px 0', borderRadius: 9, fontFamily: 'inherit',
+            border: 'none', background: 'linear-gradient(135deg,#FBBF24,#F59E0B)',
+            color: '#000', fontSize: 13, fontWeight: 700, cursor: 'pointer',
+          }}>Mở liên kết</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function extractText(node) {
+  if (typeof node === 'string') return node
+  if (Array.isArray(node)) return node.map(extractText).join('')
+  if (node?.props?.children) return extractText(node.props.children)
+  return ''
+}
+
+function CodeBlock({ children }) {
+  const [copied, setCopied] = useState(false)
+  const codeEl = Array.isArray(children) ? children[0] : children
+  const raw = extractText(codeEl?.props?.children ?? '')
+  const lang = (codeEl?.props?.className ?? '').replace('language-', '').replace('hljs ', '').trim() || ''
+
+  function copy() {
+    navigator.clipboard.writeText(raw.trimEnd()).then(() => {
+      setCopied(true); setTimeout(() => setCopied(false), 2000)
+    })
+  }
+
+  return (
+    <div style={{ borderRadius: 10, overflow: 'hidden', background: 'rgba(0,0,0,0.45)', border: '1px solid rgba(255,255,255,0.08)', margin: '4px 0', maxWidth: '100%' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '5px 10px 5px 12px', background: 'rgba(255,255,255,0.04)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+        <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', fontFamily: 'monospace', fontWeight: 600, letterSpacing: '0.05em' }}>{lang || 'code'}</span>
+        <button onClick={copy} style={{ padding: '2px 9px', borderRadius: 5, border: '1px solid rgba(255,255,255,0.1)', background: copied ? 'rgba(52,211,153,0.15)' : 'rgba(255,255,255,0.05)', color: copied ? '#34D399' : 'rgba(255,255,255,0.4)', fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s' }}>
+          {copied ? '✓ Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre style={{ margin: 0, padding: '10px 14px', overflowX: 'auto', fontSize: 12, lineHeight: 1.65, fontFamily: '"JetBrains Mono","Fira Code",monospace', whiteSpace: 'pre', background: 'transparent' }}>
+        {codeEl}
+      </pre>
+    </div>
+  )
+}
+
+function MarkdownMessage({ content, mdReady, onLinkClick }) {
+  if (!mdReady || !_md.Md) {
+    return <span style={{ fontSize: 13, color: '#E2E8F5', lineHeight: 1.65, wordBreak: 'break-word', display: 'block' }}>{content}</span>
+  }
+  const Md = _md.Md
+  const { gfm, math, katex, highlight } = _md.plugins
+  return (
+    <Md
+      className="chat-md"
+      remarkPlugins={[gfm, math]}
+      rehypePlugins={[katex, highlight]}
+      components={{
+        pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+        a: ({ href, children }) => {
+          const go = (e) => {
+            if (e.ctrlKey || e.metaKey || e.shiftKey) return
+            e.preventDefault(); onLinkClick?.(href)
+          }
+          return <a href={href} target="_blank" rel="noopener noreferrer" onClick={go} style={{ color: '#00C9B8', textDecoration: 'underline', textUnderlineOffset: 3, cursor: 'pointer' }}>{children}</a>
+        },
+      }}
+    >
+      {_autoLink(content)}
+    </Md>
+  )
+}
+
+function ChatPanel({ messages, onSend, localUserId }) {
+  const [text, setText]             = useState('')
+  const [pendingLink, setPendingLink] = useState(null)
+  const [atBottom, setAtBottom]     = useState(true)
+  const [mdReady, setMdReady]       = useState(_md.loaded)
+  const bottomRef   = useRef(null)
+  const listRef     = useRef(null)
+  const textareaRef = useRef(null)
+
+  useEffect(() => { if (!_md.loaded) _loadMd(() => setMdReady(true)) }, [])
+
+  useEffect(() => {
+    if (atBottom) bottomRef.current?.scrollIntoView({ behavior: messages.length <= 1 ? 'instant' : 'smooth' })
+  }, [messages.length, atBottom])
+
+  function onScroll(e) {
+    const el = e.currentTarget
+    setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 80)
+  }
+
+  function scrollToBottom() { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); setAtBottom(true) }
+
+  function resizeTextarea(el) {
+    el.style.height = '1px'
+    const h = el.scrollHeight
+    el.style.height = Math.min(h, 120) + 'px'
+    el.style.overflowY = h > 120 ? 'auto' : 'hidden'
+  }
+
+  function handleSend() {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    onSend(trimmed)
+    setText('')
+    if (textareaRef.current) { textareaRef.current.style.height = 'auto'; textareaRef.current.style.overflowY = 'hidden' }
+    setAtBottom(true)
+  }
+
+  function wrapSel(before, after = before) {
+    const el = textareaRef.current; if (!el) return
+    const s = el.selectionStart, e_ = el.selectionEnd
+    const next = text.slice(0, s) + before + text.slice(s, e_) + after + text.slice(e_)
+    setText(next)
+    requestAnimationFrame(() => { el.selectionStart = s + before.length; el.selectionEnd = e_ + before.length; el.focus() })
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); return }
+    if (e.ctrlKey || e.metaKey) {
+      if (e.key === 'b') { e.preventDefault(); wrapSel('**') }
+      else if (e.key === 'i') { e.preventDefault(); wrapSel('*') }
+      else if (e.key === '`') { e.preventDefault(); wrapSel('`') }
+    }
+  }
+
+  const fmt = ms => new Date(ms).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' }}>
+      <style>{`
+        @keyframes chatIn { from { opacity:0; transform:translateY(5px) } to { opacity:1; transform:translateY(0) } }
+        .chat-md { font-size: 13px; color: #E2E8F5; line-height: 1.65; word-break: break-word; }
+        .chat-md > *:first-child { margin-top: 0 !important; }
+        .chat-md > *:last-child  { margin-bottom: 0 !important; }
+        .chat-md p { margin: 0 0 4px; }
+        .chat-md p:last-child { margin-bottom: 0; }
+        .chat-md strong { color: #fff; font-weight: 700; }
+        .chat-md em { color: rgba(255,255,255,0.82); font-style: italic; }
+        .chat-md code { font-family: "JetBrains Mono","Fira Code",monospace; font-size: 11.5px; background: rgba(0,0,0,0.38); border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 1px 5px; color: #7dd3fc; }
+        .chat-md pre { margin: 0; }
+        .chat-md pre code { background: none; border: none; padding: 0; color: inherit; font-size: 12px; }
+        .chat-md blockquote { margin: 4px 0; padding: 3px 10px; border-left: 3px solid rgba(0,201,184,0.4); color: rgba(255,255,255,0.55); font-style: italic; }
+        .chat-md ul, .chat-md ol { margin: 3px 0; padding-left: 18px; }
+        .chat-md li { margin-bottom: 2px; }
+        .chat-md h1, .chat-md h2, .chat-md h3 { color: #fff; margin: 7px 0 3px; font-weight: 700; }
+        .chat-md h1 { font-size: 15px; } .chat-md h2 { font-size: 14px; } .chat-md h3 { font-size: 13px; }
+        .chat-md table { border-collapse: collapse; font-size: 12px; margin: 4px 0; width: 100%; }
+        .chat-md th, .chat-md td { border: 1px solid rgba(255,255,255,0.1); padding: 5px 10px; }
+        .chat-md th { background: rgba(255,255,255,0.05); font-weight: 700; }
+        .chat-md .katex { font-size: 1.08em; }
+        .chat-md .katex-display { margin: 8px 0; overflow-x: auto; }
+        .chat-md .katex-display .katex { font-size: 1.12em; }
+        .chat-stb:hover { background: rgba(0,201,184,0.15) !important; border-color: rgba(0,201,184,0.35) !important; color: #00C9B8 !important; }
+      `}</style>
+
+      {/* ── Message list ── */}
+      <div ref={listRef} onScroll={onScroll} style={{ flex: 1, overflowY: 'auto', padding: '4px 0 8px', display: 'flex', flexDirection: 'column' }}>
+        {messages.length === 0 ? (
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, minHeight: 180, padding: '0 20px', textAlign: 'center' }}>
+            <div style={{ width: 48, height: 48, borderRadius: 14, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="1.5" strokeLinecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+            </div>
+            <div>
+              <p style={{ margin: '0 0 3px', fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.28)' }}>Chưa có tin nhắn</p>
+              <p style={{ margin: 0, fontSize: 11, color: 'rgba(255,255,255,0.16)', lineHeight: 1.55 }}>Hãy bắt đầu cuộc trò chuyện</p>
+            </div>
+          </div>
+        ) : messages.map((m, i) => {
+          const prev = i > 0 ? messages[i - 1] : null
+          const next = i < messages.length - 1 ? messages[i + 1] : null
+          const mine = m.sender_id === localUserId
+          const grouped = isSameGroup(prev, m)
+          const isLastInGroup = !isSameGroup(m, next)
+          const color = senderColor(m.sender_name)
+
+          return (
+            <div key={m.id} style={{ display: 'flex', flexDirection: mine ? 'row-reverse' : 'row', alignItems: 'flex-end', gap: 7, padding: '0 12px', marginTop: grouped ? 2 : (i === 0 ? 6 : 10), animation: 'chatIn 0.18s cubic-bezier(0.22,1,0.36,1)' }}>
+
+              {/* Avatar — others only, hidden when grouped */}
+              {!mine && (
+                <div style={{ width: 26, height: 26, borderRadius: '50%', flexShrink: 0, background: !grouped ? color + '20' : 'transparent', border: !grouped ? `1px solid ${color}50` : 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, color, visibility: !grouped ? 'visible' : 'hidden', alignSelf: 'flex-end', marginBottom: 2 }}>
+                  {!grouped && (m.sender_name?.[0] ?? '?').toUpperCase()}
+                </div>
+              )}
+
+              <div style={{ maxWidth: '80%', minWidth: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', alignItems: mine ? 'flex-end' : 'flex-start' }}>
+                {/* Sender name */}
+                {!mine && !grouped && (
+                  <span style={{ fontSize: 10, fontWeight: 700, color, marginBottom: 3, paddingLeft: 2, letterSpacing: '0.01em' }}>{m.sender_name}</span>
+                )}
+
+                {/* Bubble */}
+                <div style={{
+                  padding: '8px 12px',
+                  width: '100%', boxSizing: 'border-box', overflow: 'hidden',
+                  borderRadius: mine
+                    ? (grouped ? '14px 4px 4px 14px' : '14px 14px 4px 14px')
+                    : (grouped ? '4px 14px 14px 4px' : '4px 14px 14px 14px'),
+                  background: mine ? 'rgba(0,201,184,0.13)' : 'rgba(255,255,255,0.07)',
+                  border: `1px solid ${mine ? 'rgba(0,201,184,0.2)' : 'rgba(255,255,255,0.07)'}`,
+                }}>
+                  <MarkdownMessage content={m.text} mdReady={mdReady} onLinkClick={setPendingLink} />
+                </div>
+
+                {/* Timestamp — only last in group */}
+                {isLastInGroup && (
+                  <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.2)', marginTop: 4, paddingLeft: 2, paddingRight: 2 }}>{fmt(m.timestamp_ms)}</span>
+                )}
+              </div>
+            </div>
+          )
+        })}
+        <div ref={bottomRef} style={{ height: 4 }} />
+      </div>
+
+      {/* Scroll-to-bottom button */}
+      {!atBottom && (
+        <button className="chat-stb" onClick={scrollToBottom} style={{ position: 'absolute', bottom: 80, right: 14, width: 30, height: 30, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(12,15,28,0.92)', backdropFilter: 'blur(12px)', color: 'rgba(255,255,255,0.5)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 20px rgba(0,0,0,0.5)', transition: 'all 0.15s', padding: 0, zIndex: 10 }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+      )}
+
+      {/* ── Input ── */}
+      <div style={{ paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.06)', flexShrink: 0 }}>
+        <div
+          style={{ display: 'flex', alignItems: 'flex-end', gap: 8, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 14, padding: '7px 7px 7px 13px', transition: 'border-color 0.15s, box-shadow 0.15s' }}
+          onFocusCapture={e => { e.currentTarget.style.borderColor = 'rgba(0,201,184,0.42)'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(0,201,184,0.07)' }}
+          onBlurCapture={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)'; e.currentTarget.style.boxShadow = 'none' }}
+        >
+          <textarea
+            ref={textareaRef}
+            value={text}
+            onChange={e => { setText(e.target.value); resizeTextarea(e.target) }}
+            onKeyDown={handleKeyDown}
+            placeholder="Nhắn tin…"
+            rows={1}
+            style={{ flex: 1, resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: '#fff', fontSize: 13, fontFamily: 'inherit', lineHeight: 1.55, padding: '3px 0', minHeight: 22, overflowY: 'hidden' }}
+          />
+          <button onClick={handleSend} disabled={!text.trim()} style={{ width: 34, height: 34, borderRadius: 10, border: 'none', flexShrink: 0, background: text.trim() ? 'linear-gradient(135deg,#00C9B8,#009E8A)' : 'rgba(255,255,255,0.05)', color: text.trim() ? '#07090F' : 'rgba(255,255,255,0.18)', cursor: text.trim() ? 'pointer' : 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.18s', boxShadow: text.trim() ? '0 4px 14px rgba(0,201,184,0.35)' : 'none', alignSelf: 'flex-end' }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
+        <p style={{ margin: '5px 2px 0', fontSize: 9.5, color: 'rgba(255,255,255,0.15)', lineHeight: 1.4 }}>
+          Enter gửi · Shift+Enter xuống dòng
+        </p>
+      </div>
+
+      {pendingLink && (
+        <LinkConfirmModal
+          url={pendingLink}
+          onConfirm={() => { window.open(pendingLink, '_blank', 'noopener,noreferrer'); setPendingLink(null) }}
+          onCancel={() => setPendingLink(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+/* ── TTS panel ──────────────────────────────────────────────────────────── */
+function SignRecorder({ onResult, onClose, BASE, accessToken }) {
+  const videoRef     = useRef(null)
+  const recorderRef  = useRef(null)
+  const streamRef    = useRef(null)
+  const chunksRef    = useRef([])
+  const timerRef     = useRef(null)
+  const [phase, setPhase]     = useState('idle')   // idle | ready | recording | translating | error
+  const [elapsed, setElapsed] = useState(0)
+  const [errMsg, setErrMsg]   = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+      .then(stream => {
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
+        streamRef.current = stream
+        if (videoRef.current) videoRef.current.srcObject = stream
+        if (!cancelled) setPhase('ready')
+      })
+      .catch(() => { if (!cancelled) { setPhase('error'); setErrMsg('Không thể truy cập camera.') } })
+    return () => {
+      cancelled = true
+      clearInterval(timerRef.current)
+      streamRef.current?.getTracks().forEach(t => t.stop())
+    }
+  }, [])
+
+  function startRecording() {
+    if (!streamRef.current) return
+    chunksRef.current = []
+    const recorder = new MediaRecorder(streamRef.current)
+    recorder.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data) }
+    recorder.start()
+    recorderRef.current = recorder
+    setElapsed(0)
+    setPhase('recording')
+    timerRef.current = setInterval(() => setElapsed(s => s + 1), 1000)
+  }
+
+  async function stopAndTranslate() {
+    clearInterval(timerRef.current)
+    setPhase('translating')
+    await new Promise(resolve => {
+      recorderRef.current.onstop = resolve
+      recorderRef.current.stop()
+    })
+    streamRef.current?.getTracks().forEach(t => t.stop())
+    streamRef.current = null
+    if (videoRef.current) videoRef.current.srcObject = null
+
+    const mimeType = recorderRef.current.mimeType || 'video/webm'
+    const blob = new Blob(chunksRef.current, { type: mimeType })
+    const form = new FormData()
+    form.append('video', blob, mimeType.includes('mp4') ? 'recording.mp4' : 'recording.webm')
+    try {
+      const res = await fetch(`${BASE}/sign`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: form,
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'Dịch thất bại')
+      onResult(data.text || '')
+    } catch (e) {
+      setPhase('error')
+      setErrMsg(e.message)
+    }
+  }
+
+  const fmtTime = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {/* Camera preview */}
+      <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9', borderRadius: 10, overflow: 'hidden', background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.08)' }}>
+        <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)', display: phase === 'translating' ? 'none' : 'block' }} />
+        {phase === 'translating' && (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 10, color: 'rgba(255,255,255,0.5)' }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#A78BFA" strokeWidth="2.5" strokeLinecap="round" style={{ animation: 'spin 0.7s linear infinite' }}><path d="M12 2a10 10 0 0 1 10 10"/></svg>
+            <span style={{ fontSize: 12 }}>Đang dịch...</span>
+          </div>
+        )}
+        {phase === 'recording' && (
+          <>
+            <div style={{ position: 'absolute', top: 10, left: 10, width: 10, height: 10, borderRadius: '50%', background: '#FF6B8A', animation: 'liveDot 1s ease-in-out infinite' }} />
+            <div style={{ position: 'absolute', top: 8, left: 26, fontSize: 11, fontWeight: 700, color: '#FF6B8A', letterSpacing: 0.5 }}>{fmtTime(elapsed)}</div>
+          </>
+        )}
+        {phase === 'idle' && (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)' }}>Đang khởi động camera...</span>
+          </div>
+        )}
+        {phase === 'error' && (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12 }}>
+            <span style={{ fontSize: 12, color: '#F87171', textAlign: 'center' }}>{errMsg}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Controls */}
+      <div style={{ display: 'flex', gap: 8 }}>
+        {phase !== 'recording' ? (
+          <button
+            onClick={startRecording}
+            disabled={phase === 'translating' || phase === 'error'}
+            style={{
+              flex: 1, padding: '9px', borderRadius: 9, border: 'none', fontFamily: 'inherit',
+              background: phase === 'error' ? 'rgba(255,255,255,0.05)' : 'rgba(0,201,184,0.15)',
+              color: phase === 'error' ? 'rgba(255,255,255,0.2)' : '#00C9B8',
+              fontSize: 12, fontWeight: 700, cursor: phase === 'error' ? 'default' : 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="8"/></svg>
+            Bắt đầu quay
+          </button>
+        ) : (
+          <button
+            onClick={stopAndTranslate}
+            style={{
+              flex: 1, padding: '9px', borderRadius: 9, border: 'none', fontFamily: 'inherit',
+              background: 'rgba(255,107,138,0.15)', color: '#FF6B8A',
+              fontSize: 12, fontWeight: 700, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+            Dừng &amp; Dịch
+          </button>
+        )}
+        <button
+          onClick={onClose}
+          disabled={phase === 'translating'}
+          style={{
+            padding: '9px 14px', borderRadius: 9, border: '1px solid rgba(255,255,255,0.08)', fontFamily: 'inherit',
+            background: 'rgba(255,255,255,0.04)', color: 'rgba(255,255,255,0.4)',
+            fontSize: 12, cursor: phase === 'translating' ? 'default' : 'pointer',
+          }}
+        >
+          Huỷ
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function TtsPanel({ meetingId, accessToken, ttsMessages, captionsWsRef, localParticipant, micEnabled, onReplay, localUserId }) {
+  const [text, setText]         = useState('')
+  const [sending, setSending]   = useState(false)
+  const [error, setError]       = useState('')
+  const [showSign, setShowSign] = useState(false)
+  const bottomRef = useRef(null)
+  const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8001'
+  const myMessages = ttsMessages.filter(m => m.speaker_id === localUserId)
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [ttsMessages.length])
+
+  async function handleSend() {
+    const trimmed = text.trim()
+    if (!trimmed || sending || !micEnabled) return
+    setSending(true)
+    setError('')
+    try {
+      const res = await fetch(`${BASE}/meetings/${meetingId}/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ text: trimmed }),
+      })
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}))
+        throw new Error(e.detail || 'TTS thất bại')
+      }
+      const data = await res.json().catch(() => ({}))
+      if (data.audio_url && localParticipant) {
+        const resp = await fetch(data.audio_url)
+        const buf = await resp.arrayBuffer()
+        const ctx = new AudioContext()
+        const decoded = await ctx.decodeAudioData(buf)
+        const dest = ctx.createMediaStreamDestination()
+        const src = ctx.createBufferSource()
+        src.buffer = decoded
+        src.connect(dest)
+        src.connect(ctx.destination)
+        const lkTrack = new LocalAudioTrack(dest.stream.getAudioTracks()[0], undefined, false)
+        await localParticipant.publishTrack(lkTrack, { name: 'tts' })
+        src.onended = async () => {
+          await localParticipant.unpublishTrack(lkTrack)
+          ctx.close()
+        }
+        src.start()
+      }
+      setText('')
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  function handleSignResult(translated) {
+    setShowSign(false)
+    setText(prev => prev ? prev + ' ' + translated : translated)
+  }
+
+  const fmt = (ms) => new Date(ms).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 10 }}>
+      {/* Mic-muted banner */}
+      {!micEnabled && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '10px 14px', borderRadius: 10,
+          background: 'rgba(255,107,138,0.08)', border: '1px solid rgba(255,107,138,0.2)',
+          flexShrink: 0,
+        }}>
+          <MicIcon on={false} size={15} color="#FF6B8A" />
+          <p style={{ margin: 0, fontSize: 12, color: '#FF6B8A', lineHeight: 1.5 }}>
+            Mic đang tắt — bật mic để sử dụng TTS.
+          </p>
+        </div>
+      )}
+
+      {/* Message history — own messages only */}
+      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {myMessages.length === 0 ? (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, gap: 10, minHeight: 120, textAlign: 'center' }}>
+            <TtsIcon size={28} />
+            <p style={{ margin: 0, fontSize: 12, color: 'rgba(255,255,255,0.25)' }}>Nhập văn bản để chuyển thành giọng nói</p>
+          </div>
+        ) : myMessages.map(m => (
+          <div key={m.id} style={{
+            padding: '9px 12px', borderRadius: 10,
+            background: 'rgba(167,139,250,0.07)', border: '1px solid rgba(167,139,250,0.12)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: '#A78BFA' }}>{m.speaker_name}</span>
+              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)' }}>{fmt(m.timestamp_ms)}</span>
+            </div>
+            <p style={{ margin: 0, fontSize: 13, color: 'rgba(255,255,255,0.78)', lineHeight: 1.5 }}>{m.text}</p>
+            {m.audio_url && (
+              <button onClick={async () => {
+                if (!micEnabled || !localParticipant) return
+                onReplay?.(m)
+                try {
+                  const resp = await fetch(m.audio_url)
+                  const buf = await resp.arrayBuffer()
+                  const ctx = new AudioContext()
+                  const decoded = await ctx.decodeAudioData(buf)
+                  const dest = ctx.createMediaStreamDestination()
+                  const src = ctx.createBufferSource()
+                  src.buffer = decoded
+                  src.connect(dest)
+                  src.connect(ctx.destination)
+                  const lkTrack = new LocalAudioTrack(dest.stream.getAudioTracks()[0], undefined, false)
+                  await localParticipant.publishTrack(lkTrack, { name: 'tts' })
+                  src.onended = async () => { await localParticipant.unpublishTrack(lkTrack); ctx.close() }
+                  src.start()
+                } catch {}
+              }} style={{
+                marginTop: 6, display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px',
+                borderRadius: 7, border: '1px solid rgba(167,139,250,0.2)',
+                background: 'rgba(167,139,250,0.08)', color: '#A78BFA',
+                fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+              }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                Phát lại
+              </button>
+            )}
+          </div>
+        ))}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Sign recorder (expands above input) */}
+      {showSign && (
+        <SignRecorder
+          BASE={BASE}
+          accessToken={accessToken}
+          onResult={handleSignResult}
+          onClose={() => setShowSign(false)}
+        />
+      )}
+
+      {/* Input */}
+      {error && <p style={{ margin: 0, fontSize: 11, color: '#F87171' }}>{error}</p>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <textarea
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (micEnabled) handleSend() } }}
+          placeholder="Nhập văn bản… (Enter để gửi)"
+          rows={3}
+          style={{
+            width: '100%', padding: '10px 12px', borderRadius: 10, resize: 'none',
+            background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.09)',
+            color: '#fff', fontSize: 13, fontFamily: 'inherit', outline: 'none',
+            boxSizing: 'border-box', lineHeight: 1.5, transition: 'border-color 0.15s',
+          }}
+          onFocus={e => e.target.style.borderColor = 'rgba(167,139,250,0.4)'}
+          onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.09)'}
+        />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={() => setShowSign(v => !v)}
+            disabled={!micEnabled}
+            title="Dịch ngôn ngữ ký hiệu"
+            style={{
+              padding: '10px 14px', borderRadius: 10, border: showSign ? '1px solid rgba(0,201,184,0.4)' : '1px solid rgba(255,255,255,0.08)',
+              background: showSign ? 'rgba(0,201,184,0.12)' : 'rgba(255,255,255,0.04)',
+              color: showSign ? '#00C9B8' : (micEnabled ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.15)'),
+              cursor: micEnabled ? 'pointer' : 'default', flexShrink: 0,
+              transition: 'all 0.15s', lineHeight: 1,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <svg width="20" height="17" viewBox="0 0 22 17" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="2.5" y1="7.5" x2="2.5" y2="2.5" />
+              <line x1="5"   y1="7.5" x2="5"   y2="1"   />
+              <line x1="7.5" y1="7.5" x2="7.5" y2="1"   />
+              <line x1="10"  y1="7.5" x2="10"  y2="2.5" />
+              <path d="M1.5 7.5 Q1 9 1.5 11 Q2.5 14 6 15 Q9 15.5 11 14 Q12 13 12 10.5 L12 7.5" />
+              <line x1="15.5" y1="9"   x2="15.5" y2="12"  />
+              <line x1="18"   y1="6.5" x2="18"   y2="14.5"/>
+              <line x1="20.5" y1="9"   x2="20.5" y2="12"  />
+            </svg>
+          </button>
+          <button
+            onClick={handleSend}
+            disabled={!text.trim() || sending || !micEnabled}
+            style={{
+              flex: 1, padding: '10px', borderRadius: 10, border: 'none',
+              background: text.trim() && !sending && micEnabled ? 'linear-gradient(135deg, #A78BFA, #7C3AED)' : 'rgba(167,139,250,0.1)',
+              color: text.trim() && !sending && micEnabled ? '#fff' : 'rgba(255,255,255,0.25)',
+              fontSize: 13, fontWeight: 700, cursor: text.trim() && !sending && micEnabled ? 'pointer' : 'default',
+              fontFamily: 'inherit', transition: 'all 0.15s',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+              boxShadow: text.trim() && !sending && micEnabled ? '0 4px 16px rgba(124,58,237,0.3)' : 'none',
+            }}
+          >
+            {sending ? (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ animation: 'spin 0.7s linear infinite' }}><path d="M12 2a10 10 0 0 1 10 10"/></svg>
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 010 7.07"/></svg>
+            )}
+            {sending ? 'Đang tạo…' : 'Phát giọng nói'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ── Coming soon panel ──────────────────────────────────────────────────── */
 function ComingSoonPanel({ label, phase }) {
   return (
@@ -999,7 +2525,7 @@ function LeaveButton({ isHost, leaving, ending, onLeave, onEnd }) {
         disabled={leaving}
         title="Rời phòng"
         style={{
-          width: 42, height: 42, borderRadius: 12, border: 'none',
+          width: 42, height: 42, borderRadius: 12,
           background: leaving ? 'rgba(255,255,255,0.06)' : 'rgba(15,18,32,0.95)',
           border: '1px solid rgba(255,69,69,0.3)',
           color: leaving ? 'rgba(255,255,255,0.3)' : '#FF5555',
@@ -1011,8 +2537,8 @@ function LeaveButton({ isHost, leaving, ending, onLeave, onEnd }) {
         onMouseEnter={e => { if (!leaving) { e.currentTarget.style.background = '#FF3B3B'; e.currentTarget.style.borderColor = '#FF3B3B'; e.currentTarget.style.color = '#fff' } }}
         onMouseLeave={e => { e.currentTarget.style.background = 'rgba(15,18,32,0.95)'; e.currentTarget.style.borderColor = 'rgba(255,69,69,0.3)'; e.currentTarget.style.color = '#FF5555' }}
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-          <path d="M18 6L6 18M6 6l12 12"/>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1-9.4 0-17-7.6-17-17 0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1L6.6 10.8z" transform="rotate(135 12 12)"/>
         </svg>
       </button>
     )
@@ -1025,7 +2551,7 @@ function LeaveButton({ isHost, leaving, ending, onLeave, onEnd }) {
         disabled={busy}
         title="Rời / Kết thúc"
         style={{
-          width: 42, height: 42, borderRadius: 12, border: 'none',
+          width: 42, height: 42, borderRadius: 12,
           background: open ? '#FF3B3B' : (busy ? 'rgba(255,255,255,0.06)' : 'rgba(15,18,32,0.95)'),
           border: `1px solid ${open ? '#FF3B3B' : 'rgba(255,69,69,0.3)'}`,
           color: open ? '#fff' : (busy ? 'rgba(255,255,255,0.3)' : '#FF5555'),
@@ -1043,8 +2569,8 @@ function LeaveButton({ isHost, leaving, ending, onLeave, onEnd }) {
             <path d="M12 2a10 10 0 0 1 10 10"/>
           </svg>
         ) : (
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-            <path d="M18 6L6 18M6 6l12 12"/>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1-9.4 0-17-7.6-17-17 0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1L6.6 10.8z" transform="rotate(135 12 12)"/>
           </svg>
         )}
       </button>
@@ -1226,19 +2752,30 @@ function ScreenIcon({ on, size = 18 }) {
     </svg>
   )
 }
-function CaptionIcon({ size = 18 }) {
+function CaptionIcon({ size = 18, on = true }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
       <rect x="2" y="5" width="20" height="14" rx="2"/><path d="M7 13h4M7 9h10"/>
+      {!on && <line x1="1" y1="1" x2="23" y2="23" strokeWidth="2.5"/>}
+    </svg>
+  )
+}
+function TranscriptIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+      <polyline points="14 2 14 8 20 8"/>
+      <line x1="16" y1="13" x2="8" y2="13"/>
+      <line x1="16" y1="17" x2="8" y2="17"/>
+      <line x1="10" y1="9" x2="8" y2="9"/>
     </svg>
   )
 }
 function TtsIcon({ size = 18 }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-      <path d="M11 5L6 9H2v6h4l5 4V5z"/>
-      <path d="M15.54 8.46a5 5 0 010 7.07"/>
-      <path d="M19.07 4.93a10 10 0 010 14.14"/>
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 10h6l10-5v14L8 14H2V10z"/>
+      <path d="M5 14v4"/>
     </svg>
   )
 }

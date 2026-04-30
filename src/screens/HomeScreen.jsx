@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import useStore from '../store'
 import { meetingsApi } from '../api/meetings'
 
 /* ── utils ─────────────────────────────────────────────────────────────── */
 function getGreeting() {
-  const h = new Date().getHours()
+  const h = parseInt(new Intl.DateTimeFormat('vi-VN', { hour: 'numeric', hour12: false, timeZone: 'Asia/Ho_Chi_Minh' }).format(new Date()), 10)
   if (h < 12) return 'Chào buổi sáng'
   if (h < 18) return 'Chào buổi chiều'
   return 'Chào buổi tối'
@@ -23,6 +23,11 @@ function timeAgo(iso) {
   if (d === 1) return 'Hôm qua'
   if (d < 7) return `${d} ngày trước`
   return new Date(iso).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })
+}
+
+function fmtDate(iso) {
+  if (!iso) return ''
+  return new Date(iso).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Asia/Ho_Chi_Minh' })
 }
 
 function fmtDuration(start, end) {
@@ -46,6 +51,7 @@ export default function HomeScreen() {
   const joinInputRef = useRef(null)
 
   const fetchMeetings = useCallback(async () => {
+    if (!accessToken) return
     try {
       const data = await meetingsApi.list(accessToken)
       setMeetings(data || [])
@@ -53,7 +59,11 @@ export default function HomeScreen() {
     finally { setLoading(false) }
   }, [accessToken])
 
-  useEffect(() => { fetchMeetings() }, [fetchMeetings])
+  useEffect(() => {
+    fetchMeetings()
+    const interval = setInterval(fetchMeetings, 10000)
+    return () => clearInterval(interval)
+  }, [fetchMeetings])
 
   async function handleCreate() {
     setCreating(true)
@@ -76,6 +86,7 @@ export default function HomeScreen() {
 
   const today = new Date().toLocaleDateString('vi-VN', {
     weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric',
+    timeZone: 'Asia/Ho_Chi_Minh',
   })
   const liveCount = meetings.filter(m => !m.ended_at).length
 
@@ -105,7 +116,7 @@ export default function HomeScreen() {
         }}>
           <div>
             <p style={{ margin: '0 0 5px', fontSize: 13, fontWeight: 500, color: 'rgba(255,255,255,0.27)', letterSpacing: '0.01em' }}>
-              {getGreeting()},
+              {getGreeting()}, <span style={{ opacity: 1, color: 'initial' }}>👋🏼</span>
             </p>
             <h1 style={{ margin: 0, fontSize: 38, fontWeight: 900, letterSpacing: '-1.3px', color: '#fff', lineHeight: 1.05 }}>
               {user?.display_name ?? 'bạn'}
@@ -149,46 +160,14 @@ export default function HomeScreen() {
         </div>
 
         {/* ── Recent meetings ── */}
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
-            <h2 style={{
-              margin: 0, fontSize: 11, fontWeight: 700,
-              letterSpacing: '0.09em', textTransform: 'uppercase',
-              color: 'rgba(255,255,255,0.28)',
-            }}>
-              Cuộc họp gần đây
-            </h2>
-            {meetings.length > 0 && (
-              <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.18)', fontWeight: 500 }}>
-                {meetings.length} cuộc họp
-              </span>
-            )}
-          </div>
-
-          {loading ? (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10 }}>
-              {[1, 2, 3, 4, 5].map(i => <SkeletonCard key={i} />)}
-            </div>
-          ) : meetings.length === 0 ? (
-            <EmptyState />
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10 }}>
-              {meetings.map(m => (
-                <MeetingCard
-                  key={m.id}
-                  meeting={m}
-                  isHost={m.host_id === user?.id}
-                  onRejoin={() => navigate(`/meeting/${m.room_code}`)}
-                  onEnd={async () => {
-                    await meetingsApi.end(m.id, accessToken)
-                    fetchMeetings()
-                  }}
-                  onDetail={() => navigate(`/library/${m.id}`)}
-                />
-              ))}
-            </div>
-          )}
-        </div>
+        <RecentMeetings
+          meetings={meetings}
+          loading={loading}
+          user={user}
+          accessToken={accessToken}
+          navigate={navigate}
+          fetchMeetings={fetchMeetings}
+        />
       </div>
 
       <style>{`
@@ -213,6 +192,99 @@ export default function HomeScreen() {
           to { transform: rotate(360deg); }
         }
       `}</style>
+    </div>
+  )
+}
+
+/* ── Recent meetings ────────────────────────────────────────────────────── */
+function RecentMeetings({ meetings, loading, user, accessToken, navigate, fetchMeetings }) {
+  const gridRef = useRef(null)
+  const [hasOverflow, setHasOverflow] = useState(false)
+
+  useLayoutEffect(() => {
+    const el = gridRef.current
+    if (!el) return
+    const check = () => setHasOverflow(el.scrollHeight > el.clientHeight + 2)
+    check()
+    const ro = new ResizeObserver(check)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [meetings])
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+        <h2 style={{
+          margin: 0, fontSize: 11, fontWeight: 700,
+          letterSpacing: '0.09em', textTransform: 'uppercase',
+          color: 'rgba(255,255,255,0.28)',
+        }}>
+          Cuộc họp gần đây
+        </h2>
+        {meetings.length > 0 && (
+          <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.18)', fontWeight: 500 }}>
+            {meetings.length} cuộc họp
+          </span>
+        )}
+      </div>
+
+      {loading ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 14 }}>
+          {[1, 2, 3].map(i => <SkeletonCard key={i} />)}
+        </div>
+      ) : meetings.length === 0 ? (
+        <EmptyState />
+      ) : (
+        <>
+          <div ref={gridRef} style={{ overflow: 'hidden', maxHeight: 168 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 14 }}>
+              {meetings.map(m => (
+                <MeetingCard
+                  key={m.id}
+                  meeting={m}
+                  isHost={m.host_id === user?.id}
+                  onRejoin={() => navigate(`/meeting/${m.room_code}`)}
+                  onEnd={async () => {
+                    await meetingsApi.end(m.id, accessToken)
+                    fetchMeetings()
+                  }}
+                  onDetail={() => navigate(`/library/${m.id}`)}
+                />
+              ))}
+            </div>
+          </div>
+          {hasOverflow && (
+            <button
+              onClick={() => navigate('/library')}
+              style={{
+                marginTop: 10, width: '100%',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+                padding: '10px 0', borderRadius: 11,
+                border: '1px solid rgba(255,255,255,0.07)',
+                background: 'rgba(255,255,255,0.02)',
+                color: 'rgba(255,255,255,0.32)',
+                fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={e => {
+                e.currentTarget.style.borderColor = 'rgba(255,255,255,0.13)'
+                e.currentTarget.style.color = 'rgba(255,255,255,0.6)'
+                e.currentTarget.style.background = 'rgba(255,255,255,0.04)'
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.borderColor = 'rgba(255,255,255,0.07)'
+                e.currentTarget.style.color = 'rgba(255,255,255,0.32)'
+                e.currentTarget.style.background = 'rgba(255,255,255,0.02)'
+              }}
+            >
+              Xem tất cả trong Thư viện
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+              </svg>
+            </button>
+          )}
+        </>
+      )}
     </div>
   )
 }
@@ -446,12 +518,14 @@ function JoinCard({ joinCode, setJoinCode, onJoin, inputRef }) {
 
 /* ── Meeting card ───────────────────────────────────────────────────────── */
 function MeetingCard({ meeting, isHost, onRejoin, onEnd, onDetail }) {
-  const [hovered, setHovered] = useState(false)
-  const [ending,  setEnding]  = useState(false)
+  const [hovered,  setHovered]  = useState(false)
+  const [ending,   setEnding]   = useState(false)
+  const [confirm,  setConfirm]  = useState(false)
   const isLive = !meeting.ended_at
 
   async function handleEnd(e) {
     e.stopPropagation()
+    setConfirm(false)
     setEnding(true)
     await onEnd()
     setEnding(false)
@@ -472,6 +546,7 @@ function MeetingCard({ meeting, isHost, onRejoin, onEnd, onDetail }) {
           animation: 'cardIn 0.3s ease both',
           fontFamily: 'inherit',
           display: 'flex', flexDirection: 'column',
+          height: 168,
         }}
       >
         {/* Glow top edge */}
@@ -484,11 +559,14 @@ function MeetingCard({ meeting, isHost, onRejoin, onEnd, onDetail }) {
         <div style={{ padding: '18px 18px 16px', flex: 1, display: 'flex', flexDirection: 'column' }}>
           {/* Top row: room code + live badge */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-            <span style={{
-              fontSize: 17, fontWeight: 900, letterSpacing: '0.07em', color: '#fff',
-            }}>
-              {meeting.room_code}
-            </span>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{ fontSize: 17, fontWeight: 900, letterSpacing: '0.07em', color: '#fff' }}>
+                {meeting.room_code}
+              </span>
+              <span style={{ fontSize: 10, color: 'rgba(0,201,184,0.65)', fontWeight: 500 }}>
+                {fmtDate(meeting.started_at)}
+              </span>
+            </div>
             <div style={{
               display: 'flex', alignItems: 'center', gap: 5,
               padding: '3px 9px', borderRadius: 20,
@@ -544,7 +622,7 @@ function MeetingCard({ meeting, isHost, onRejoin, onEnd, onDetail }) {
 
             {isHost && (
               <button
-                onClick={handleEnd}
+                onClick={e => { e.stopPropagation(); setConfirm(true) }}
                 disabled={ending}
                 title="Kết thúc phòng họp"
                 style={{
@@ -567,6 +645,47 @@ function MeetingCard({ meeting, isHost, onRejoin, onEnd, onDetail }) {
             )}
           </div>
         </div>
+
+        {confirm && (
+          <div onClick={e => { e.stopPropagation(); setConfirm(false) }} style={{
+            position: 'absolute', inset: 0, zIndex: 10, borderRadius: 18,
+            background: '#0F1220',
+            border: '1px solid rgba(255,255,255,0.08)',
+            display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
+            padding: '20px 18px',
+            animation: 'modalIn 0.22s cubic-bezier(0.22,1,0.36,1)',
+          }}>
+            <style>{`@keyframes modalIn { from { opacity:0; transform:scale(0.97) } to { opacity:1; transform:scale(1) } }`}</style>
+            <div onClick={e => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{
+                width: 34, height: 34, borderRadius: 10, flexShrink: 0,
+                background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.25)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="2" strokeLinecap="round">
+                  <path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/>
+                  <line x1="17" y1="11" x2="23" y2="11"/>
+                </svg>
+              </div>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#fff', marginBottom: 2 }}>Kết thúc cuộc họp?</div>
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>Tất cả người dùng sẽ bị ngắt kết nối</div>
+              </div>
+            </div>
+            <div onClick={e => e.stopPropagation()} style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => setConfirm(false)} style={{
+                flex: 1, padding: '8px 0', borderRadius: 9, fontFamily: 'inherit',
+                border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)',
+                color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              }}>Huỷ</button>
+              <button onClick={handleEnd} style={{
+                flex: 1, padding: '8px 0', borderRadius: 9, fontFamily: 'inherit',
+                border: 'none', background: 'linear-gradient(135deg,#F87171,#EF4444)',
+                color: '#fff', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+              }}>Kết thúc</button>
+            </div>
+          </div>
+        )}
       </div>
     )
   }
@@ -587,6 +706,7 @@ function MeetingCard({ meeting, isHost, onRejoin, onEnd, onDetail }) {
         transition: 'all 0.2s ease',
         animation: 'cardIn 0.3s ease both',
         display: 'flex', flexDirection: 'column',
+        height: 168,
       }}
     >
       {/* Top section */}
@@ -626,36 +746,35 @@ function MeetingCard({ meeting, isHost, onRejoin, onEnd, onDetail }) {
         </div>
       </div>
 
-      {/* Bottom action strip */}
+      {/* Bottom strip */}
       <div style={{
         borderTop: '1px solid rgba(255,255,255,0.05)',
         padding: '10px 18px',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         background: 'rgba(255,255,255,0.02)',
       }}>
-        <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.22)', fontWeight: 500 }}>
-          Đã kết thúc
-        </span>
-        <button
-          onClick={e => { e.stopPropagation(); onDetail() }}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 5,
-            padding: '5px 12px', borderRadius: 8,
-            border: '1px solid rgba(167,139,250,0.2)',
-            background: hovered ? 'rgba(167,139,250,0.14)' : 'rgba(167,139,250,0.08)',
-            color: '#A78BFA', fontSize: 11, fontWeight: 700,
-            cursor: 'pointer', fontFamily: 'inherit',
-            transition: 'all 0.15s',
-          }}
-          onMouseEnter={e => e.stopPropagation()}
-        >
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-            <polyline points="14 2 14 8 20 8"/>
-            <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+        <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.22)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4 }}>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
           </svg>
-          Tóm tắt
-        </button>
+          {fmtDate(meeting.started_at)}
+        </span>
+        {meeting.summary && (
+          <span style={{
+            display: 'flex', alignItems: 'center', gap: 4,
+            padding: '3px 9px', borderRadius: 7,
+            border: '1px solid rgba(167,139,250,0.2)',
+            background: 'rgba(167,139,250,0.08)',
+            color: '#A78BFA', fontSize: 10, fontWeight: 700,
+          }}>
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+            </svg>
+            Đã tóm tắt
+          </span>
+        )}
       </div>
     </div>
   )

@@ -305,7 +305,7 @@ export default function AudioTrimmer({ audioBlob, maxDuration = 15, onChange }) 
           padding: '6px 12px', borderRadius: 8,
           background: 'rgba(0,201,184,0.05)', border: '1px solid rgba(0,201,184,0.12)',
         }}>
-          <span style={{ fontSize: 11, fontVariantNumeric: 'tabular-nums', color: ACCENT, fontWeight: 700, flexShrink: 0 }}>
+          <span style={{ fontSize: 11, fontVariantNumeric: 'tabular-nums', color: ACCENT, fontWeight: 700, flexShrink: 0, width: 44, display: 'inline-block' }}>
             {fmt(trimStart + dotRatio * (trimEnd - trimStart))}
           </span>
 

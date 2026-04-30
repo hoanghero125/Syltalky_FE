@@ -27,6 +27,10 @@ export default function DeviceCheckScreen() {
   const [roomGone,    setRoomGone]   = useState(false)
   const [creating,    setCreating]   = useState(false)
   const [checking,    setChecking]   = useState(true)
+  const [waiting,     setWaiting]    = useState(false) // in waiting room
+  const [waitingDenied, setWaitingDenied] = useState(false)
+  const waitingWsRef = useRef(null)
+  const waitingStateRef = useRef({ camOn: true, micOn: true, selectedCam: '', selectedMic: '' })
 
   const enumerateDevices = useCallback(async () => {
     try {
@@ -114,27 +118,61 @@ export default function DeviceCheckScreen() {
     if (!next) setMicLevel(0)
   }
 
+  function enterRoom(result) {
+    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop())
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current)
+    sessionStorage.setItem('meeting_join_authorized', '1')
+    const s = waitingStateRef.current
+    navigate(`/meeting/${roomCode}/room`, {
+      state: {
+        token: result.token,
+        livekit_url: result.livekit_url,
+        meeting_id: result.meeting_id,
+        host_id: result.host_id,
+        waiting_room_enabled: result.waiting_room_enabled ?? true,
+        cam_on: s.camOn,
+        mic_on: s.micOn,
+        cam_device_id: s.selectedCam || null,
+        mic_device_id: s.selectedMic || null,
+      },
+      replace: true,
+    })
+  }
+
   async function handleJoin() {
     setJoining(true)
     setJoinError('')
+    // snapshot device state for use if approved later
+    waitingStateRef.current = { camOn, micOn, selectedCam, selectedMic }
     try {
       const result = await meetingsApi.join(roomCode, accessToken)
-      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop())
-      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current)
-      sessionStorage.setItem('meeting_join_authorized', '1')
-      navigate(`/meeting/${roomCode}/room`, {
-        state: {
-          token: result.token,
-          livekit_url: result.livekit_url,
-          meeting_id: result.meeting_id,
-          host_id: result.host_id,
-          cam_on: camOn,
-          mic_on: micOn,
-          cam_device_id: selectedCam || null,
-          mic_device_id: selectedMic || null,
-        },
-        replace: true,
-      })
+
+      if (result.status === 'waiting') {
+        setJoining(false)
+        setWaiting(true)
+        // Connect to waiting WS to receive approval/denial
+        const BASE = (import.meta.env.VITE_API_URL || 'http://localhost:8001')
+          .replace('http://', 'ws://').replace('https://', 'wss://')
+        const ws = new WebSocket(
+          `${BASE}/meetings/${result.meeting_id}/waiting-ws?request_id=${result.request_id}&token=${accessToken}`
+        )
+        waitingWsRef.current = ws
+        ws.onmessage = (e) => {
+          const msg = JSON.parse(e.data)
+          if (msg.type === 'join_approved') {
+            ws.close()
+            enterRoom(msg)
+          } else if (msg.type === 'join_denied') {
+            ws.close()
+            setWaiting(false)
+            setWaitingDenied(true)
+          }
+        }
+        ws.onerror = () => {}
+        return
+      }
+
+      enterRoom(result)
     } catch (e) {
       const msg = (e.message || '').toLowerCase()
       if (msg.includes('not found') || msg.includes('already ended') || msg.includes('404')) {
@@ -144,6 +182,11 @@ export default function DeviceCheckScreen() {
       }
       setJoining(false)
     }
+  }
+
+  function cancelWaiting() {
+    if (waitingWsRef.current) { waitingWsRef.current.close(); waitingWsRef.current = null }
+    navigate('/home', { replace: true })
   }
 
   async function handleCreateNew() {
@@ -251,6 +294,78 @@ export default function DeviceCheckScreen() {
     )
   }
 
+  if (waiting || waitingDenied) {
+    return (
+      <div style={{
+        position: 'fixed', inset: 0, background: '#060810',
+        fontFamily: '"Be Vietnam Pro", sans-serif',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', maxWidth: 360, padding: '0 24px' }}>
+          {waitingDenied ? (
+            <>
+              <div style={{
+                width: 64, height: 64, borderRadius: 20, marginBottom: 24,
+                background: 'rgba(255,107,138,0.1)', border: '1px solid rgba(255,107,138,0.2)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#FF6B8A" strokeWidth="2" strokeLinecap="round">
+                  <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+                </svg>
+              </div>
+              <h2 style={{ margin: '0 0 10px', fontSize: 22, fontWeight: 900, color: '#fff' }}>Yêu cầu bị từ chối</h2>
+              <p style={{ margin: '0 0 32px', fontSize: 14, color: 'rgba(255,255,255,0.38)', lineHeight: 1.6 }}>
+                Host đã không chấp nhận yêu cầu tham gia của bạn.
+              </p>
+              <button onClick={() => navigate('/home', { replace: true })} style={{
+                width: '100%', padding: '13px', borderRadius: 13,
+                border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)',
+                color: 'rgba(255,255,255,0.7)', fontSize: 14, fontWeight: 700,
+                cursor: 'pointer', fontFamily: 'inherit',
+              }}>Về trang chủ</button>
+            </>
+          ) : (
+            <>
+              <div style={{
+                width: 64, height: 64, borderRadius: 20, marginBottom: 24,
+                background: 'rgba(0,201,184,0.08)', border: '1px solid rgba(0,201,184,0.2)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#00C9B8" strokeWidth="2" strokeLinecap="round">
+                  <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/>
+                  <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+                </svg>
+              </div>
+              <h2 style={{ margin: '0 0 10px', fontSize: 22, fontWeight: 900, color: '#fff' }}>Đang chờ xét duyệt</h2>
+              <p style={{ margin: '0 0 8px', fontSize: 14, color: 'rgba(255,255,255,0.38)', lineHeight: 1.6 }}>
+                Phòng <span style={{ color: 'rgba(255,255,255,0.65)', fontWeight: 700 }}>{roomCode}</span>
+              </p>
+              <p style={{ margin: '0 0 32px', fontSize: 13, color: 'rgba(255,255,255,0.28)', lineHeight: 1.6 }}>
+                Host sẽ xét duyệt yêu cầu của bạn. Vui lòng chờ…
+              </p>
+              {/* Animated dots */}
+              <div style={{ display: 'flex', gap: 7, marginBottom: 32 }}>
+                {[0,1,2].map(i => (
+                  <div key={i} style={{
+                    width: 8, height: 8, borderRadius: '50%', background: '#00C9B8',
+                    animation: `liveDot 1.4s ease-in-out ${i * 0.22}s infinite`,
+                  }} />
+                ))}
+              </div>
+              <button onClick={cancelWaiting} style={{
+                width: '100%', padding: '13px', borderRadius: 13,
+                border: '1px solid rgba(255,255,255,0.08)', background: 'transparent',
+                color: 'rgba(255,255,255,0.45)', fontSize: 14, fontWeight: 600,
+                cursor: 'pointer', fontFamily: 'inherit',
+              }}>Huỷ yêu cầu</button>
+            </>
+          )}
+        </div>
+        <style>{`@keyframes liveDot{0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.4;transform:scale(1.4)}}`}</style>
+      </div>
+    )
+  }
+
   return (
     <div style={{
       position: 'fixed', inset: 0,
@@ -277,7 +392,7 @@ export default function DeviceCheckScreen() {
         <img
           src="/images/full_logo_transparent.png"
           alt="Syltalky"
-          style={{ height: 28, objectFit: 'contain' }}
+          style={{ height: 42, objectFit: 'contain' }}
           onError={e => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'inline' }}
         />
         <span style={{

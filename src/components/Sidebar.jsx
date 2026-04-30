@@ -31,11 +31,9 @@ const NAV = [
 export default function Sidebar({ onSettings }) {
   const location = useLocation()
   const navigate = useNavigate()
-  const { user, notifications, accessToken, logout } = useStore()
+  const { user, accessToken, logout } = useStore()
   const [confirmLogout, setConfirmLogout] = useState(false)
   const [creating, setCreating] = useState(false)
-
-  const unread = notifications.filter(n => !n.is_read).length
 
   async function handleNewMeeting() {
     if (creating) return
@@ -60,7 +58,7 @@ export default function Sidebar({ onSettings }) {
       fontFamily: '"Be Vietnam Pro", sans-serif',
       background: '#080B14',
       borderRight: '1px solid rgba(255,255,255,0.05)',
-      position: 'relative', overflow: 'hidden',
+      position: 'relative', overflow: 'visible',
     }}>
 
       {/* Top ambient glow */}
@@ -134,33 +132,13 @@ export default function Sidebar({ onSettings }) {
 
       {/* ── Nav ── */}
       <nav style={{ padding: '0 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
-        {NAV.map(item => {
-          const active = location.pathname === item.path
-          return (
-            <NavItem key={item.path} item={item} active={active} />
-          )
-        })}
+        {NAV.map(item => (
+          <NavItem key={item.path} item={item} active={location.pathname === item.path} />
+        ))}
       </nav>
 
       {/* ── Spacer ── */}
       <div style={{ flex: 1 }} />
-
-      {/* ── Divider ── */}
-      <div style={{ height: 1, background: 'rgba(255,255,255,0.05)', margin: '0 14px 10px' }} />
-
-      {/* ── Notifications ── */}
-      <div style={{ padding: '0 10px 6px' }}>
-        <SidebarBtn
-          icon={
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-              <path d="M13.73 21a2 2 0 01-3.46 0"/>
-            </svg>
-          }
-          label="Thông báo"
-          badge={unread > 0 ? (unread > 9 ? '9+' : String(unread)) : null}
-        />
-      </div>
 
       {/* ── Divider ── */}
       <div style={{ height: 1, background: 'rgba(255,255,255,0.05)', margin: '0 14px 12px' }} />
@@ -173,24 +151,15 @@ export default function Sidebar({ onSettings }) {
           background: 'rgba(255,255,255,0.04)',
           border: '1px solid rgba(255,255,255,0.06)',
         }}>
-          {/* Avatar */}
           <UserAvatar name={user?.display_name} avatarUrl={user?.avatar_url} size={34} />
-
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{
-              fontSize: 13, fontWeight: 700, color: '#fff',
-              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-            }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {user?.display_name ?? '—'}
             </div>
-            <div style={{
-              fontSize: 11, color: 'rgba(255,255,255,0.28)', marginTop: 1,
-              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-            }}>
+            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.28)', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {user?.email ?? ''}
             </div>
           </div>
-
           <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
             <IconBtn onClick={onSettings} title="Cài đặt">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -209,7 +178,6 @@ export default function Sidebar({ onSettings }) {
         </div>
       </div>
 
-      {/* ── Logout confirm ── */}
       {confirmLogout && (
         <LogoutModal onCancel={() => setConfirmLogout(false)} onConfirm={handleLogout} />
       )}
@@ -220,7 +188,6 @@ export default function Sidebar({ onSettings }) {
 /* ── Nav item ───────────────────────────────────────────────────────────── */
 function NavItem({ item, active }) {
   const [hovered, setHovered] = useState(false)
-
   return (
     <Link
       to={item.path}
@@ -230,15 +197,12 @@ function NavItem({ item, active }) {
         display: 'flex', alignItems: 'center', gap: 11,
         padding: '9px 12px', borderRadius: 10, textDecoration: 'none',
         color: active ? '#fff' : (hovered ? 'rgba(255,255,255,0.75)' : 'rgba(255,255,255,0.38)'),
-        background: active
-          ? 'rgba(0,201,184,0.1)'
-          : (hovered ? 'rgba(255,255,255,0.04)' : 'transparent'),
+        background: active ? 'rgba(0,201,184,0.1)' : (hovered ? 'rgba(255,255,255,0.04)' : 'transparent'),
         border: `1px solid ${active ? 'rgba(0,201,184,0.18)' : 'transparent'}`,
         fontWeight: active ? 700 : 500, fontSize: 13.5,
         transition: 'all 0.15s', position: 'relative',
       }}
     >
-      {/* Active left bar */}
       {active && (
         <div style={{
           position: 'absolute', left: 0, top: '22%', bottom: '22%',
@@ -246,51 +210,15 @@ function NavItem({ item, active }) {
           background: 'linear-gradient(to bottom, #00C9B8, #00A08A)',
         }} />
       )}
-      <span style={{ color: active ? '#00C9B8' : 'inherit', display: 'flex', flexShrink: 0 }}>
-        {item.icon}
-      </span>
+      <span style={{ color: active ? '#00C9B8' : 'inherit', display: 'flex', flexShrink: 0 }}>{item.icon}</span>
       {item.label}
     </Link>
-  )
-}
-
-/* ── Sidebar row button ─────────────────────────────────────────────────── */
-function SidebarBtn({ icon, label, badge, onClick }) {
-  const [hovered, setHovered] = useState(false)
-
-  return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        width: '100%', display: 'flex', alignItems: 'center', gap: 11,
-        padding: '9px 12px', borderRadius: 10, border: 'none',
-        background: hovered ? 'rgba(255,255,255,0.04)' : 'transparent',
-        color: hovered ? 'rgba(255,255,255,0.75)' : 'rgba(255,255,255,0.38)',
-        fontSize: 13.5, fontWeight: 500, cursor: 'pointer',
-        fontFamily: '"Be Vietnam Pro", sans-serif', transition: 'all 0.15s',
-      }}
-    >
-      <span style={{ display: 'flex', flexShrink: 0 }}>{icon}</span>
-      {label}
-      {badge && (
-        <span style={{
-          marginLeft: 'auto', background: '#F87171', color: '#fff',
-          fontSize: 10, fontWeight: 700, borderRadius: 999,
-          padding: '1px 7px', minWidth: 20, textAlign: 'center',
-        }}>
-          {badge}
-        </span>
-      )}
-    </button>
   )
 }
 
 /* ── Icon button ────────────────────────────────────────────────────────── */
 function IconBtn({ children, onClick, title, danger }) {
   const [hovered, setHovered] = useState(false)
-
   return (
     <button
       onClick={onClick}
@@ -299,12 +227,8 @@ function IconBtn({ children, onClick, title, danger }) {
       onMouseLeave={() => setHovered(false)}
       style={{
         width: 28, height: 28, borderRadius: 7, border: 'none',
-        background: hovered
-          ? (danger ? 'rgba(248,113,113,0.15)' : 'rgba(255,255,255,0.08)')
-          : 'transparent',
-        color: hovered
-          ? (danger ? '#F87171' : 'rgba(255,255,255,0.85)')
-          : 'rgba(255,255,255,0.3)',
+        background: hovered ? (danger ? 'rgba(248,113,113,0.15)' : 'rgba(255,255,255,0.08)') : 'transparent',
+        color: hovered ? (danger ? '#F87171' : 'rgba(255,255,255,0.85)') : 'rgba(255,255,255,0.3)',
         cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
         transition: 'all 0.15s',
       }}
@@ -314,7 +238,6 @@ function IconBtn({ children, onClick, title, danger }) {
   )
 }
 
-/* ── Spinner ────────────────────────────────────────────────────────────── */
 function SpinnerIcon() {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
@@ -325,73 +248,36 @@ function SpinnerIcon() {
   )
 }
 
-/* ── Logout modal ───────────────────────────────────────────────────────── */
 function LogoutModal({ onCancel, onConfirm }) {
   return (
-    <div
-      onClick={onCancel}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 600,
-        background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(8px)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontFamily: '"Be Vietnam Pro", sans-serif',
-      }}
-    >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          width: 340, background: '#0F1117', borderRadius: 18,
-          border: '1px solid rgba(255,255,255,0.08)',
-          boxShadow: '0 32px 80px rgba(0,0,0,0.7)',
-          padding: '28px 28px 24px',
-          animation: 'modalIn 0.18s cubic-bezier(0.22,1,0.36,1)',
-        }}
-      >
+    <div onClick={onCancel} style={{
+      position: 'fixed', inset: 0, zIndex: 600,
+      background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(8px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontFamily: '"Be Vietnam Pro", sans-serif',
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: 340, background: '#0F1117', borderRadius: 18,
+        border: '1px solid rgba(255,255,255,0.08)',
+        boxShadow: '0 32px 80px rgba(0,0,0,0.7)',
+        padding: '28px 28px 24px',
+        animation: 'modalIn 0.18s cubic-bezier(0.22,1,0.36,1)',
+      }}>
         <style>{'@keyframes modalIn { from { opacity:0; transform:scale(0.95) translateY(8px) } to { opacity:1; transform:scale(1) translateY(0) } }'}</style>
-
-        <div style={{
-          width: 44, height: 44, borderRadius: 12, marginBottom: 18,
-          background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.18)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>
+        <div style={{ width: 44, height: 44, borderRadius: 12, marginBottom: 18, background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.18)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/>
             <polyline points="16 17 21 12 16 7"/>
             <line x1="21" y1="12" x2="9" y2="12"/>
           </svg>
         </div>
-
-        <h3 style={{ margin: '0 0 8px', fontSize: 17, fontWeight: 800, color: '#fff', letterSpacing: '-0.4px' }}>
-          Đăng xuất?
-        </h3>
+        <h3 style={{ margin: '0 0 8px', fontSize: 17, fontWeight: 800, color: '#fff', letterSpacing: '-0.4px' }}>Đăng xuất?</h3>
         <p style={{ margin: '0 0 24px', fontSize: 13, color: 'rgba(255,255,255,0.38)', lineHeight: 1.65 }}>
           Bạn sẽ cần đăng nhập lại để tiếp tục sử dụng Syltalky.
         </p>
-
         <div style={{ display: 'flex', gap: 10 }}>
-          <button
-            onClick={onCancel}
-            style={{
-              flex: 1, padding: '11px', borderRadius: 10,
-              border: '1px solid rgba(255,255,255,0.1)', background: 'transparent',
-              color: 'rgba(255,255,255,0.5)', fontWeight: 600, fontSize: 14,
-              cursor: 'pointer', fontFamily: 'inherit',
-            }}
-          >
-            Huỷ
-          </button>
-          <button
-            onClick={onConfirm}
-            style={{
-              flex: 1, padding: '11px', borderRadius: 10,
-              background: 'rgba(248,113,113,0.12)',
-              border: '1px solid rgba(248,113,113,0.22)',
-              color: '#F87171', fontWeight: 700, fontSize: 14,
-              cursor: 'pointer', fontFamily: 'inherit',
-            }}
-          >
-            Đăng xuất
-          </button>
+          <button onClick={onCancel} style={{ flex: 1, padding: '11px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: 'rgba(255,255,255,0.5)', fontWeight: 600, fontSize: 14, cursor: 'pointer', fontFamily: 'inherit' }}>Huỷ</button>
+          <button onClick={onConfirm} style={{ flex: 1, padding: '11px', borderRadius: 10, background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.22)', color: '#F87171', fontWeight: 700, fontSize: 14, cursor: 'pointer', fontFamily: 'inherit' }}>Đăng xuất</button>
         </div>
       </div>
     </div>

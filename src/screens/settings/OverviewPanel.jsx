@@ -132,7 +132,7 @@ export default function OverviewPanel() {
 
       <div style={{ display: 'flex', gap: 10 }}>
         <button onClick={handleSave} disabled={saving} style={{
-          padding: '10px 24px', borderRadius: 9, border: 'none',
+          padding: '10px 24px', borderRadius: 9,
           background: saving ? 'rgba(0,201,184,0.4)' : success ? 'rgba(52,211,153,0.2)' : 'linear-gradient(135deg,#00C9B8,#0099CC)',
           color: success ? '#34D399' : '#fff', fontWeight: 700, fontSize: 14,
           cursor: saving ? 'default' : 'pointer',

@@ -3,9 +3,14 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  base: './',
+  base: '/',
   server: {
     port: 5173,
+  },
+  preview: {
+    port: 5173,
+    host: true,
+    allowedHosts: ['syltalky.pro.vn', 'api.syltalky.pro.vn'],
   },
   build: {
     outDir: 'dist',
