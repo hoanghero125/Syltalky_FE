@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import useStore from '../store'
 import { meetingsApi } from '../api/meetings'
@@ -28,12 +28,20 @@ const NAV = [
 ]
 
 /* ── Sidebar ────────────────────────────────────────────────────────────── */
-export default function Sidebar({ onSettings }) {
+export default function Sidebar({ onSettings, isMobile, mobileOpen, onMobileClose }) {
   const location = useLocation()
   const navigate = useNavigate()
   const { user, accessToken, logout } = useStore()
   const [confirmLogout, setConfirmLogout] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [closing, setClosing] = useState(false)
+
+  useEffect(() => {
+    if (!mobileOpen && closing) {
+      const t = setTimeout(() => setClosing(false), 260)
+      return () => clearTimeout(t)
+    }
+  }, [mobileOpen, closing])
 
   async function handleNewMeeting() {
     if (creating) return
@@ -41,6 +49,7 @@ export default function Sidebar({ onSettings }) {
     try {
       const meeting = await meetingsApi.create(accessToken)
       navigate(`/meeting/${meeting.room_code}`)
+      onMobileClose?.()
     } catch {
       setCreating(false)
     }
@@ -51,14 +60,30 @@ export default function Sidebar({ onSettings }) {
     navigate('/login')
   }
 
+  function handleClose() {
+    if (isMobile) setClosing(true)
+    onMobileClose?.()
+  }
+
+  if (isMobile && !mobileOpen && !closing) return null
+
   return (
+    <>
+      <style>{`
+        @keyframes sidebarSlideIn { from { transform: translateX(-100%) } to { transform: translateX(0) } }
+        @keyframes sidebarSlideOut { from { transform: translateX(0) } to { transform: translateX(-100%) } }
+      `}</style>
     <div style={{
-      width: 240, flexShrink: 0, height: '100%',
+      width: isMobile ? '100%' : 240, flexShrink: 0, height: '100%',
       display: 'flex', flexDirection: 'column',
       fontFamily: '"Be Vietnam Pro", sans-serif',
       background: '#080B14',
-      borderRight: '1px solid rgba(255,255,255,0.05)',
-      position: 'relative', overflow: 'visible',
+      borderRight: isMobile ? 'none' : '1px solid rgba(255,255,255,0.05)',
+      position: isMobile ? 'fixed' : 'relative',
+      top: 0, left: 0, bottom: 0, right: isMobile ? 0 : 'auto',
+      zIndex: isMobile ? 500 : 'auto',
+      overflow: 'visible',
+      animation: isMobile ? `${closing ? 'sidebarSlideOut' : 'sidebarSlideIn'} 0.26s cubic-bezier(0.22,1,0.36,1) both` : 'none',
     }}>
 
       {/* Top ambient glow */}
@@ -68,9 +93,9 @@ export default function Sidebar({ onSettings }) {
         pointerEvents: 'none',
       }} />
 
-      {/* ── Logo ── */}
-      <div style={{ padding: '20px 20px 16px', position: 'relative' }}>
-        <Link to="/" style={{ display: 'inline-block', textDecoration: 'none' }}>
+      {/* ── Logo + close button (mobile) ── */}
+      <div style={{ padding: '20px 20px 16px', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Link to="/" style={{ display: 'inline-block', textDecoration: 'none' }} onClick={handleClose}>
           <img
             src="/images/full_logo_transparent.png"
             alt="Syltalky"
@@ -88,6 +113,20 @@ export default function Sidebar({ onSettings }) {
             Syltalky
           </span>
         </Link>
+        {isMobile && (
+          <button
+            onClick={handleClose}
+            style={{
+              width: 32, height: 32, borderRadius: 9, border: 'none',
+              background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.5)',
+              cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        )}
       </div>
 
       {/* ── New meeting CTA ── */}
@@ -133,7 +172,7 @@ export default function Sidebar({ onSettings }) {
       {/* ── Nav ── */}
       <nav style={{ padding: '0 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
         {NAV.map(item => (
-          <NavItem key={item.path} item={item} active={location.pathname === item.path} />
+          <NavItem key={item.path} item={item} active={location.pathname === item.path} onClick={handleClose} />
         ))}
       </nav>
 
@@ -182,15 +221,17 @@ export default function Sidebar({ onSettings }) {
         <LogoutModal onCancel={() => setConfirmLogout(false)} onConfirm={handleLogout} />
       )}
     </div>
+    </>
   )
 }
 
 /* ── Nav item ───────────────────────────────────────────────────────────── */
-function NavItem({ item, active }) {
+function NavItem({ item, active, onClick }) {
   const [hovered, setHovered] = useState(false)
   return (
     <Link
       to={item.path}
+      onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{

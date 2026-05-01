@@ -2,10 +2,12 @@ import { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react
 import { useNavigate } from 'react-router-dom'
 import useStore from '../store'
 import { meetingsApi } from '../api/meetings'
+import useBreakpoint from '../hooks/useBreakpoint'
 
 /* ── utils ─────────────────────────────────────────────────────────────── */
 function getGreeting() {
   const h = parseInt(new Intl.DateTimeFormat('vi-VN', { hour: 'numeric', hour12: false, timeZone: 'Asia/Ho_Chi_Minh' }).format(new Date()), 10)
+  if (h >= 0 && h < 5)  return 'Muộn rồi mà sao còn'
   if (h < 12) return 'Chào buổi sáng'
   if (h < 18) return 'Chào buổi chiều'
   return 'Chào buổi tối'
@@ -43,6 +45,7 @@ function fmtDuration(start, end) {
 export default function HomeScreen() {
   const navigate = useNavigate()
   const { user, accessToken } = useStore()
+  const { isMobile, isTablet } = useBreakpoint()
   const [meetings, setMeetings] = useState([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
@@ -99,7 +102,7 @@ export default function HomeScreen() {
 
       {/* Ambient blobs — fixed so they don't scroll */}
       <div aria-hidden style={{
-        position: 'fixed', top: 0, left: 240, right: 0, bottom: 0,
+        position: 'fixed', top: 0, left: isMobile ? 0 : 240, right: 0, bottom: 0,
         pointerEvents: 'none', zIndex: 0,
         background: `
           radial-gradient(ellipse 50% 40% at 30% 10%, rgba(0,201,184,0.06) 0%, transparent 65%),
@@ -107,25 +110,28 @@ export default function HomeScreen() {
         `,
       }} />
 
-      <div style={{ position: 'relative', zIndex: 1, padding: '44px 52px 64px' }}>
+      <div style={{ position: 'relative', zIndex: 1, padding: isMobile ? '20px 16px 48px' : isTablet ? '32px 32px 56px' : '44px 52px 64px' }}>
 
         {/* ── Header ── */}
         <div style={{
-          display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
-          marginBottom: 40,
+          display: 'flex', alignItems: isMobile ? 'flex-start' : 'flex-end',
+          flexDirection: isMobile ? 'column' : 'row',
+          justifyContent: 'space-between',
+          gap: isMobile ? 8 : 0,
+          marginBottom: isMobile ? 24 : 40,
         }}>
           <div>
-            <p style={{ margin: '0 0 5px', fontSize: 13, fontWeight: 500, color: 'rgba(255,255,255,0.27)', letterSpacing: '0.01em' }}>
+            <p style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 500, color: 'rgba(255,255,255,0.27)', letterSpacing: '0.01em' }}>
               {getGreeting()}, <span style={{ opacity: 1, color: 'initial' }}>👋🏼</span>
             </p>
-            <h1 style={{ margin: 0, fontSize: 38, fontWeight: 900, letterSpacing: '-1.3px', color: '#fff', lineHeight: 1.05 }}>
+            <h1 style={{ margin: 0, fontSize: isMobile ? 28 : 38, fontWeight: 900, letterSpacing: '-1.3px', color: '#fff', lineHeight: 1.05 }}>
               {user?.display_name ?? 'bạn'}
             </h1>
           </div>
-          <div style={{ textAlign: 'right', paddingBottom: 4 }}>
+          <div style={{ textAlign: isMobile ? 'left' : 'right', paddingBottom: 4 }}>
             <p style={{ margin: 0, fontSize: 12, color: 'rgba(255,255,255,0.18)', textTransform: 'capitalize' }}>{today}</p>
             {liveCount > 0 && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end', marginTop: 7 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: isMobile ? 'flex-start' : 'flex-end', marginTop: 7 }}>
                 <span style={{
                   display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
                   background: '#00C9B8', animation: 'liveDot 1.6s ease-in-out infinite',
@@ -141,9 +147,9 @@ export default function HomeScreen() {
         {/* ── Hero CTAs — two equal columns, full width ── */}
         <div style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
+          gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr',
           gap: 16,
-          marginBottom: 52,
+          marginBottom: isMobile ? 32 : 52,
         }}>
           <CreateCard
             creating={creating}
@@ -167,6 +173,8 @@ export default function HomeScreen() {
           accessToken={accessToken}
           navigate={navigate}
           fetchMeetings={fetchMeetings}
+          isMobile={isMobile}
+          isTablet={isTablet}
         />
       </div>
 
@@ -197,7 +205,7 @@ export default function HomeScreen() {
 }
 
 /* ── Recent meetings ────────────────────────────────────────────────────── */
-function RecentMeetings({ meetings, loading, user, accessToken, navigate, fetchMeetings }) {
+function RecentMeetings({ meetings, loading, user, accessToken, navigate, fetchMeetings, isMobile, isTablet }) {
   const gridRef = useRef(null)
   const [hasOverflow, setHasOverflow] = useState(false)
 
@@ -229,15 +237,15 @@ function RecentMeetings({ meetings, loading, user, accessToken, navigate, fetchM
       </div>
 
       {loading ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(260px, 1fr))', gap: 14 }}>
           {[1, 2, 3].map(i => <SkeletonCard key={i} />)}
         </div>
       ) : meetings.length === 0 ? (
         <EmptyState />
       ) : (
         <>
-          <div ref={gridRef} style={{ overflow: 'hidden', maxHeight: 168 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 14 }}>
+          <div ref={gridRef} style={{ overflow: 'hidden', maxHeight: isMobile ? 'none' : 168 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(260px, 1fr))', gap: 14 }}>
               {meetings.map(m => (
                 <MeetingCard
                   key={m.id}

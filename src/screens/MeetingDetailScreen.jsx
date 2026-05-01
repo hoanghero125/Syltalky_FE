@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import useStore from '../store'
 import { meetingsApi } from '../api/meetings'
+import useBreakpoint from '../hooks/useBreakpoint'
 
 function fmtDate(iso) {
   if (!iso) return '—'
@@ -29,6 +30,7 @@ export default function MeetingDetailScreen() {
   const { meetingId } = useParams()
   const navigate = useNavigate()
   const { accessToken } = useStore()
+  const { isMobile } = useBreakpoint()
   const [meeting, setMeeting] = useState(null)
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('summary')
@@ -86,13 +88,13 @@ export default function MeetingDetailScreen() {
       background: '#07090F',
     }}>
       <div aria-hidden style={{
-        position: 'fixed', top: 0, left: 240, right: 0, bottom: 0, pointerEvents: 'none', zIndex: 0,
+        position: 'fixed', top: 0, left: isMobile ? 0 : 240, right: 0, bottom: 0, pointerEvents: 'none', zIndex: 0,
         background: 'radial-gradient(ellipse 50% 40% at 60% 15%, rgba(167,139,250,0.055) 0%, transparent 65%)',
       }} />
 
       <div style={{
         position: 'relative', zIndex: 1,
-        padding: '44px 52px 0', maxWidth: 960, margin: '0 auto',
+        padding: isMobile ? '16px 16px 0' : '44px 52px 0', maxWidth: 960, margin: '0 auto',
         display: 'flex', flexDirection: 'column',
         height: tab === 'chat' ? '100%' : 'auto', boxSizing: 'border-box',
       }}>
@@ -116,7 +118,7 @@ export default function MeetingDetailScreen() {
         {/* Header */}
         <div style={{ marginBottom: 36 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-            <h1 style={{ margin: 0, fontSize: 36, fontWeight: 900, letterSpacing: '-1px', color: '#fff' }}>
+            <h1 style={{ margin: 0, fontSize: isMobile ? 26 : 36, fontWeight: 900, letterSpacing: '-1px', color: '#fff' }}>
               {meeting.room_code}
             </h1>
             {summary && (
@@ -155,7 +157,7 @@ export default function MeetingDetailScreen() {
         <div style={{
           display: 'flex', gap: 4, marginBottom: 28,
           background: 'rgba(255,255,255,0.04)', borderRadius: 12, padding: 4,
-          width: 'fit-content',
+          width: isMobile ? '100%' : 'fit-content',
         }}>
           {[
             { key: 'summary', label: 'Tóm tắt AI', color: '#A78BFA', bg: 'rgba(167,139,250,0.2)' },
@@ -163,10 +165,12 @@ export default function MeetingDetailScreen() {
             { key: 'transcript', label: `Bản ghi (${transcript.length})`, color: '#00C9B8', bg: 'rgba(0,201,184,0.15)' },
           ].map(t => (
             <button key={t.key} onClick={() => setTab(t.key)} style={{
-              padding: '8px 20px', borderRadius: 9, border: 'none', cursor: 'pointer',
+              padding: isMobile ? '8px 0' : '8px 20px', borderRadius: 9, border: 'none', cursor: 'pointer',
+              flex: isMobile ? 1 : 'none', flexShrink: 0,
               background: tab === t.key ? t.bg : 'transparent',
               color: tab === t.key ? t.color : 'rgba(255,255,255,0.35)',
-              fontSize: 13, fontWeight: 700, fontFamily: 'inherit', transition: 'all 0.15s',
+              fontSize: isMobile ? 12 : 13, fontWeight: 700, fontFamily: 'inherit', transition: 'all 0.15s',
+              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
             }}>
               {t.label}
             </button>

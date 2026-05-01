@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import useBreakpoint from '../../hooks/useBreakpoint'
 import { useNavigate, useParams, useLocation, Navigate } from 'react-router-dom'
 import {
   LiveKitRoom,
@@ -98,7 +99,10 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
   const room       = useRoomContext()
   const { subtitleSize, subtitleFont } = useStore()
 
+  const { isMobile } = useBreakpoint()
+  const [moreOpen,        setMoreOpen]         = useState(false)
   const [panel,           setPanel]           = useState(null)
+  const [mobilePanelClosing, setMobilePanelClosing] = useState(false)
   const [panelWidth,      setPanelWidth]       = useState(460)
   const [elapsed,         setElapsed]          = useState(0)
   const [captionsVisible, setCaptionsVisible]  = useState(false)
@@ -119,7 +123,6 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
   const isEndingRef = useRef(false)
   const [ending,     setEnding]     = useState(false)
   const [leaving,    setLeaving]    = useState(false)
-  const [copyTip,    setCopyTip]    = useState(false)
   const [userInfoMap, setUserInfoMap] = useState({})
   const [wasKicked,      setWasKicked]      = useState(false)
   const [hasLeft,        setHasLeft]        = useState(false)
@@ -133,12 +136,34 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
   const screenShare        = localParticipant?.isScreenShareEnabled ?? false
   const someoneElseSharing = participants.some(p => !p.isLocal && p.isScreenShareEnabled)
 
-  // Publish avatar URL to all participants via LiveKit metadata
+  // Publish display_name + avatar URL to all participants via LiveKit metadata
   useEffect(() => {
     if (!localParticipant) return
-    const metadata = JSON.stringify({ avatar_url: localUser?.avatar_url || '' })
+    const metadata = JSON.stringify({
+      display_name: localUser?.display_name || '',
+      avatar_url: localUser?.avatar_url || '',
+    })
     localParticipant.setMetadata(metadata).catch(() => {})
-  }, [localParticipant, localUser?.avatar_url])
+  }, [localParticipant, localUser?.display_name, localUser?.avatar_url])
+
+  // Listen for remote participant metadata changes (name / avatar updates)
+  useEffect(() => {
+    function onMetadataChanged(participant) {
+      if (participant.isLocal) return
+      const meta = parseMetadata(participant.metadata)
+      if (!meta.display_name && meta.avatar_url === undefined) return
+      setUserInfoMap(prev => ({
+        ...prev,
+        [participant.identity]: {
+          ...prev[participant.identity],
+          ...(meta.display_name ? { display_name: meta.display_name } : {}),
+          ...(meta.avatar_url !== undefined ? { avatar_url: meta.avatar_url } : {}),
+        },
+      }))
+    }
+    room.on(RoomEvent.ParticipantMetadataChanged, onMetadataChanged)
+    return () => room.off(RoomEvent.ParticipantMetadataChanged, onMetadataChanged)
+  }, [room])
 
   useEffect(() => {
     const iv = setInterval(() => setElapsed(s => s + 1), 1000)
@@ -281,12 +306,6 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
     return h > 0 ? `${h}:${m}:${sec}` : `${m}:${sec}`
   }
 
-  const handleCopyCode = () => {
-    navigator.clipboard.writeText(roomCode).catch(() => {})
-    setCopyTip(true)
-    setTimeout(() => setCopyTip(false), 1800)
-  }
-
   const handleLeave = useCallback(async () => {
     setLeaving(true)
     await room.disconnect()
@@ -308,7 +327,15 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
     audio: true,
     selfBrowserSurface: 'include',
   })
-  const togglePanel  = (name) => { if (name === 'chat') setChatUnread(0); setPanel(p => p === name ? null : name) }
+  const closeMobilePanel = useCallback(() => {
+    setMobilePanelClosing(true)
+    setTimeout(() => { setPanel(null); setMobilePanelClosing(false) }, 220)
+  }, [])
+  const togglePanel  = (name) => {
+    if (name === 'chat') setChatUnread(0)
+    if (isMobile && panel) { closeMobilePanel(); if (panel !== name) setTimeout(() => setPanel(name), 220); return }
+    setPanel(p => p === name ? null : name)
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%' }}>
@@ -320,17 +347,17 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden', background: '#060810', minWidth: 0 }}>
           <MeetGrid localUser={localUser} userInfoMap={userInfoMap} />
           {captionsVisible && captions.length > 0 && (
-            <SubtitleOverlay captions={captions} localUserId={localUser?.id} subtitleSize={subtitleSize} subtitleFont={subtitleFont} />
+            <SubtitleOverlay captions={captions} localUserId={localUser?.id} subtitleSize={subtitleSize} subtitleFont={subtitleFont} userInfoMap={userInfoMap} />
           )}
         </div>
 
-        {/* Right panel — true layout sibling */}
+        {/* Right panel — true layout sibling (desktop only; mobile uses fixed overlay below) */}
         <div style={{
-          width: panel ? panelWidth : 0,
+          width: (!isMobile && panel) ? panelWidth : 0,
           flexShrink: 0,
           overflow: 'hidden',
           background: '#0A0D18',
-          borderLeft: panel ? '1px solid rgba(255,255,255,0.07)' : 'none',
+          borderLeft: (!isMobile && panel) ? '1px solid rgba(255,255,255,0.07)' : 'none',
           display: 'flex', flexDirection: 'column',
         }}>
           <div
@@ -386,143 +413,138 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
               {panel === 'participants' && <ParticipantsPanel participants={participants} userInfoMap={userInfoMap} localUser={localUser} hostId={hostId} isHost={isHost} meetingId={meetingId} accessToken={accessToken} waitingRequests={waitingRequests} onApprove={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} onDeny={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} waitingRoomEnabled={waitingRoomEnabled} onToggleWaitingRoom={async (v) => { setWaitingRoomEnabled(v); try { await meetingsApi.toggleWaitingRoom(meetingId, v, accessToken) } catch { setWaitingRoomEnabled(!v) } }} />}
               {panel === 'noidung'     && <MeetingContentPanel captions={captions} ttsMessages={ttsMessages} replayLog={replayLog} userInfoMap={userInfoMap} localUser={localUser} meetingId={meetingId} accessToken={accessToken} />}
               {panel === 'tts'         && <TtsPanel meetingId={meetingId} accessToken={accessToken} ttsMessages={ttsMessages} captionsWsRef={captionsWsRef} localParticipant={localParticipant} micEnabled={micEnabled} localUserId={localUser?.id} onReplay={msg => setReplayLog(prev => [...prev.slice(-99), { ...msg, id: Date.now() + Math.random(), timestamp_ms: Date.now(), isReplay: true }])} />}
-              {panel === 'chat'        && <ChatPanel messages={chatMessages} onSend={sendChat} localUserId={localUser?.id} />}
+              {panel === 'chat'        && <ChatPanel messages={chatMessages} onSend={sendChat} localUserId={localUser?.id} userInfoMap={userInfoMap} localUser={localUser} />}
             </div>
           </div>
         </div>
       </div>
 
-      {/* ── Bottom bar — solid, 3-zone with absolutely positioned sides ── */}
-      <div style={{
-        height: 84, flexShrink: 0,
-        background: '#0A0D18',
-        borderTop: '1px solid rgba(255,255,255,0.07)',
-        position: 'relative', display: 'flex', alignItems: 'center',
-      }}>
-
-        {/* LEFT — logo + room code (absolutely placed, never affects center) */}
-        <div style={{
-          position: 'absolute', left: 24, top: '50%', transform: 'translateY(-50%)',
-          display: 'flex', alignItems: 'center', gap: 10,
-        }}>
-          <img
-            src="/images/full_logo_transparent.png"
-            alt="Syltalky"
-            style={{ height: 36, objectFit: 'contain', display: 'block', flexShrink: 0 }}
-            onError={e => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'inline' }}
-          />
-          <span style={{ display: 'none', fontSize: 17, fontWeight: 900, background: 'linear-gradient(135deg, #00C9B8, #A78BFA)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Syltalky</span>
-
-          <div style={{ width: 1, height: 16, background: 'rgba(255,255,255,0.1)', flexShrink: 0 }} />
-
-          <button onClick={handleCopyCode} style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            padding: '5px 10px', borderRadius: 7,
-            border: '1px solid rgba(255,255,255,0.08)',
-            background: 'rgba(255,255,255,0.05)',
-            cursor: 'pointer', color: '#fff', transition: 'background 0.15s',
-          }}
-            onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.09)'}
-            onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
-          >
-            <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', color: 'rgba(255,255,255,0.8)' }}>{roomCode}</span>
-            {copyTip
-              ? <span style={{ fontSize: 10, color: '#00C9B8', fontWeight: 700 }}>✓</span>
-              : <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.35)" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-            }
-          </button>
-        </div>
-
-        {/* CENTER — controls, always exactly centered */}
-        <div style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-          <IconBtn on={camEnabled}  onClick={toggleCam}    offRed><CamIcon on={camEnabled} size={20} /></IconBtn>
-          <IconBtn on={micEnabled}  onClick={toggleMic}    offRed><MicIcon on={micEnabled} size={20} /></IconBtn>
-          <IconBtn
-            on={panel === 'tts'}
-            onClick={() => micEnabled ? togglePanel('tts') : null}
-            disabled={!micEnabled}
-            title={micEnabled ? 'Text-to-speech' : 'Bật mic để dùng TTS'}
-            offRed={!micEnabled}
-          ><TtsIcon /></IconBtn>
-
-          <Divider />
-
-          <ScreenShareBtn
-            active={screenShare}
-            disabled={someoneElseSharing && !screenShare}
-            onClick={toggleScreen}
-          />
-          <IconBtn on={captionsVisible} onClick={() => setCaptionsVisible(v => !v)} offRed={!captionsVisible} title="Hiện phụ đề"><CaptionIcon on={captionsVisible} /></IconBtn>
-          <IconBtn on={panel === 'noidung'} onClick={() => togglePanel('noidung')} title="Nội dung cuộc họp"><TranscriptIcon /></IconBtn>
-          <div style={{ position: 'relative', display: 'inline-flex' }}>
-            <IconBtn on={panel === 'chat'} onClick={() => togglePanel('chat')}><ChatIcon /></IconBtn>
-            {chatUnread > 0 && (
-              <div style={{ position: 'absolute', top: -3, right: -3, minWidth: 15, height: 15, borderRadius: 8, background: '#EF4444', color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px', pointerEvents: 'none', letterSpacing: 0 }}>
-                {chatUnread > 99 ? '99+' : chatUnread}
-              </div>
-            )}
+      {/* Mobile panel overlay — full screen */}
+      {isMobile && (panel || mobilePanelClosing) && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 200, background: '#0A0D18', display: 'flex', flexDirection: 'column', animation: `${mobilePanelClosing ? 'panelSlideOut' : 'panelSlideIn'} 0.22s cubic-bezier(0.22,1,0.36,1) both` }}>
+            <div style={{ height: 52, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 18px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+              <span style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>
+                {{ participants: 'Người tham gia', chat: 'Chat', noidung: 'Nội dung cuộc họp', tts: 'Text-to-speech' }[panel] ?? ''}
+              </span>
+              <button onClick={closeMobilePanel} style={{ width: 28, height: 28, borderRadius: 7, border: 'none', background: 'rgba(255,255,255,0.06)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,255,255,0.5)' }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <div style={{ flex: 1, overflowY: panel === 'noidung' ? 'hidden' : 'auto', padding: '14px 16px', display: 'flex', flexDirection: 'column' }}>
+              {panel === 'participants' && <ParticipantsPanel participants={participants} userInfoMap={userInfoMap} localUser={localUser} hostId={hostId} isHost={isHost} meetingId={meetingId} accessToken={accessToken} waitingRequests={waitingRequests} onApprove={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} onDeny={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} waitingRoomEnabled={waitingRoomEnabled} onToggleWaitingRoom={async (v) => { setWaitingRoomEnabled(v); try { await meetingsApi.toggleWaitingRoom(meetingId, v, accessToken) } catch { setWaitingRoomEnabled(!v) } }} />}
+              {panel === 'noidung'     && <MeetingContentPanel captions={captions} ttsMessages={ttsMessages} replayLog={replayLog} userInfoMap={userInfoMap} localUser={localUser} meetingId={meetingId} accessToken={accessToken} />}
+              {panel === 'tts'         && <TtsPanel meetingId={meetingId} accessToken={accessToken} ttsMessages={ttsMessages} captionsWsRef={captionsWsRef} localParticipant={localParticipant} micEnabled={micEnabled} localUserId={localUser?.id} onReplay={msg => setReplayLog(prev => [...prev.slice(-99), { ...msg, id: Date.now() + Math.random(), timestamp_ms: Date.now(), isReplay: true }])} />}
+              {panel === 'chat'        && <ChatPanel messages={chatMessages} onSend={sendChat} localUserId={localUser?.id} userInfoMap={userInfoMap} localUser={localUser} />}
+            </div>
           </div>
-          <IconBtn on={false} onClick={() => setSettingsOpen(true)} title="Cài đặt">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
-            </svg>
-          </IconBtn>
-        </div>
+        </>
+      )}
 
-        {/* RIGHT — absolutely placed, never affects center */}
-        <div style={{
-          position: 'absolute', right: 24, top: '50%', transform: 'translateY(-50%)',
-          display: 'flex', alignItems: 'center', gap: 10,
-        }}>
-          {/* Timer — big, white, fixed-width to prevent layout shift */}
-          <span style={{
-            fontSize: 18, fontWeight: 800, color: '#fff',
-            fontVariantNumeric: 'tabular-nums', letterSpacing: '0.02em',
-            minWidth: 64, textAlign: 'right', display: 'inline-block',
-          }}>
-            {fmtTime(elapsed)}
-          </span>
+      {isMobile ? (
+        /* ── MOBILE BOTTOM BAR ── */
+        <div style={{ flexShrink: 0, background: '#0A0D18', borderTop: '1px solid rgba(255,255,255,0.07)', position: 'relative' }}>
+          {/* Info strip */}
+          <div style={{ height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+            <CopyCodeBtn roomCode={roomCode} compact isMobile />
+            <span style={{ fontSize: 12, fontWeight: 800, color: '#fff', fontVariantNumeric: 'tabular-nums' }}>{fmtTime(elapsed)}</span>
+            <button onClick={() => { togglePanel('participants'); setMoreOpen(false) }} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 6, border: `1px solid ${panel === 'participants' ? 'rgba(167,139,250,0.35)' : 'rgba(167,139,250,0.18)'}`, background: panel === 'participants' ? 'rgba(167,139,250,0.15)' : 'rgba(167,139,250,0.06)', cursor: 'pointer', color: '#A78BFA', position: 'relative' }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+              <span style={{ fontSize: 12, fontWeight: 700 }}>{participants.length}</span>
+              {isHost && waitingRequests.length > 0 && <div style={{ position: 'absolute', top: -5, right: -5, width: 14, height: 14, borderRadius: '50%', background: '#FF6B8A', border: '2px solid #0A0D18', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 8, fontWeight: 800, color: '#fff' }}>{waitingRequests.length}</div>}
+            </button>
+          </div>
 
-          <Divider />
+          {/* Main controls row */}
+          <div style={{ height: 64, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '0 16px' }}>
+            <IconBtn on={camEnabled} onClick={toggleCam} offRed size={44}><CamIcon on={camEnabled} size={18} /></IconBtn>
+            <IconBtn on={micEnabled} onClick={toggleMic} offRed size={44}><MicIcon on={micEnabled} size={18} /></IconBtn>
 
-          {/* Participants count — clickable */}
-          <button onClick={() => togglePanel('participants')} style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            padding: '7px 14px', borderRadius: 10, position: 'relative',
-            border: `1px solid ${panel === 'participants' ? 'rgba(167,139,250,0.35)' : 'rgba(167,139,250,0.18)'}`,
-            background: panel === 'participants' ? 'rgba(167,139,250,0.15)' : 'rgba(167,139,250,0.08)',
-            cursor: 'pointer', color: '#A78BFA', transition: 'all 0.15s',
-          }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/>
-              <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
-            </svg>
-            <span style={{ fontSize: 14, fontWeight: 700, minWidth: 14, textAlign: 'center' }}>{participants.length}</span>
-            {isHost && waitingRequests.length > 0 && (
-              <div style={{
-                position: 'absolute', top: -6, right: -6,
-                width: 18, height: 18, borderRadius: '50%',
-                background: '#FF6B8A', border: '2px solid #0A0D18',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 10, fontWeight: 800, color: '#fff',
-              }}>
-                {waitingRequests.length}
+            {/* More button */}
+            <button onClick={() => setMoreOpen(o => !o)} style={{ width: 44, height: 44, borderRadius: 13, border: `1px solid ${moreOpen ? 'rgba(0,201,184,0.35)' : 'rgba(255,255,255,0.12)'}`, background: moreOpen ? 'rgba(0,201,184,0.12)' : 'rgba(255,255,255,0.06)', color: moreOpen ? '#00C9B8' : 'rgba(255,255,255,0.7)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.15s' }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+            </button>
+
+            <div style={{ flex: 1 }} />
+
+            <LeaveButton isHost={isHost} leaving={leaving} ending={ending} onLeave={handleLeave} onEnd={handleEnd} />
+          </div>
+
+          {/* More sheet — slides up */}
+          {moreOpen && (
+            <>
+              <div onClick={() => setMoreOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 50 }} />
+              <div style={{ position: 'absolute', bottom: '100%', left: 0, right: 0, zIndex: 51, background: '#0F1220', borderTop: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px 16px 0 0', padding: '16px 20px 20px', boxShadow: '0 -8px 40px rgba(0,0,0,0.5)', animation: 'slideUp 0.22s cubic-bezier(0.22,1,0.36,1)' }}>
+                <div style={{ width: 36, height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.12)', margin: '0 auto 16px' }} />
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+                  {[
+                    { label: 'Màn hình', active: screenShare, disabled: someoneElseSharing && !screenShare, onClick: () => { toggleScreen(); setMoreOpen(false) }, icon: <ScreenIcon on={screenShare} size={20} /> },
+                    { label: 'Phụ đề', active: captionsVisible, onClick: () => { setCaptionsVisible(v => !v); setMoreOpen(false) }, icon: <CaptionIcon size={20} /> },
+                    { label: 'TTS', active: panel === 'tts', disabled: !micEnabled, onClick: () => { if (micEnabled) { togglePanel('tts'); setMoreOpen(false) } }, icon: <TtsIcon size={20} /> },
+                    { label: 'Chat', active: panel === 'chat', onClick: () => { togglePanel('chat'); setMoreOpen(false) }, icon: <ChatIcon size={20} />, badge: chatUnread },
+                    { label: 'Nội dung', active: panel === 'noidung', onClick: () => { togglePanel('noidung'); setMoreOpen(false) }, icon: <TranscriptIcon size={20} /> },
+                    { label: 'Cài đặt', active: false, onClick: () => { setSettingsOpen(true); setMoreOpen(false) }, icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg> },
+                  ].map((item, i) => (
+                    <button key={i} onClick={item.disabled ? undefined : item.onClick} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, padding: '12px 4px', borderRadius: 12, border: `1px solid ${item.active ? 'rgba(0,201,184,0.25)' : 'rgba(255,255,255,0.07)'}`, background: item.active ? 'rgba(0,201,184,0.1)' : 'rgba(255,255,255,0.04)', color: item.active ? '#00C9B8' : (item.disabled ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.65)'), cursor: item.disabled ? 'default' : 'pointer', opacity: item.disabled ? 0.4 : 1, fontFamily: 'inherit', position: 'relative' }}>
+                      {item.icon}
+                      <span style={{ fontSize: 10, fontWeight: 600 }}>{item.label}</span>
+                      {item.badge > 0 && <div style={{ position: 'absolute', top: 6, right: 6, minWidth: 14, height: 14, borderRadius: 7, background: '#EF4444', color: '#fff', fontSize: 8, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 2px' }}>{item.badge > 99 ? '99+' : item.badge}</div>}
+                    </button>
+                  ))}
+                </div>
               </div>
-            )}
-          </button>
-
-          <Divider />
-
-          <LeaveButton
-            isHost={isHost}
-            leaving={leaving}
-            ending={ending}
-            onLeave={handleLeave}
-            onEnd={handleEnd}
-          />
+            </>
+          )}
         </div>
-      </div>
+      ) : (
+        /* ── DESKTOP BOTTOM BAR — 3-zone with absolutely positioned sides ── */
+        <div style={{
+          height: 84, flexShrink: 0,
+          background: '#0A0D18',
+          borderTop: '1px solid rgba(255,255,255,0.07)',
+          position: 'relative', display: 'flex', alignItems: 'center',
+        }}>
+
+          {/* LEFT — logo + room code */}
+          <div style={{ position: 'absolute', left: 24, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <img src="/images/full_logo_transparent.png" alt="Syltalky" style={{ height: 36, objectFit: 'contain', display: 'block', flexShrink: 0 }} onError={e => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'inline' }} />
+            <span style={{ display: 'none', fontSize: 17, fontWeight: 900, background: 'linear-gradient(135deg, #00C9B8, #A78BFA)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Syltalky</span>
+            <div style={{ width: 1, height: 16, background: 'rgba(255,255,255,0.1)', flexShrink: 0 }} />
+            <CopyCodeBtn roomCode={roomCode} />
+          </div>
+
+          {/* CENTER — controls */}
+          <div style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+            <IconBtn on={camEnabled}  onClick={toggleCam}    offRed><CamIcon on={camEnabled} size={20} /></IconBtn>
+            <IconBtn on={micEnabled}  onClick={toggleMic}    offRed><MicIcon on={micEnabled} size={20} /></IconBtn>
+            <IconBtn on={panel === 'tts'} onClick={() => micEnabled ? togglePanel('tts') : null} disabled={!micEnabled} title={micEnabled ? 'Text-to-speech' : 'Bật mic để dùng TTS'} offRed={!micEnabled}><TtsIcon /></IconBtn>
+            <Divider />
+            <ScreenShareBtn active={screenShare} disabled={someoneElseSharing && !screenShare} onClick={toggleScreen} />
+            <IconBtn on={captionsVisible} onClick={() => setCaptionsVisible(v => !v)} offRed={!captionsVisible} title="Hiện phụ đề"><CaptionIcon on={captionsVisible} /></IconBtn>
+            <IconBtn on={panel === 'noidung'} onClick={() => togglePanel('noidung')} title="Nội dung cuộc họp"><TranscriptIcon /></IconBtn>
+            <div style={{ position: 'relative', display: 'inline-flex' }}>
+              <IconBtn on={panel === 'chat'} onClick={() => togglePanel('chat')}><ChatIcon /></IconBtn>
+              {chatUnread > 0 && <div style={{ position: 'absolute', top: -3, right: -3, minWidth: 15, height: 15, borderRadius: 8, background: '#EF4444', color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px', pointerEvents: 'none', letterSpacing: 0 }}>{chatUnread > 99 ? '99+' : chatUnread}</div>}
+            </div>
+            <IconBtn on={false} onClick={() => setSettingsOpen(true)} title="Cài đặt">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+            </IconBtn>
+          </div>
+
+          {/* RIGHT */}
+          <div style={{ position: 'absolute', right: 24, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 18, fontWeight: 800, color: '#fff', fontVariantNumeric: 'tabular-nums', letterSpacing: '0.02em', minWidth: 64, textAlign: 'right', display: 'inline-block' }}>{fmtTime(elapsed)}</span>
+            <Divider />
+            <button onClick={() => togglePanel('participants')} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 10, position: 'relative', border: `1px solid ${panel === 'participants' ? 'rgba(167,139,250,0.35)' : 'rgba(167,139,250,0.18)'}`, background: panel === 'participants' ? 'rgba(167,139,250,0.15)' : 'rgba(167,139,250,0.08)', cursor: 'pointer', color: '#A78BFA', transition: 'all 0.15s' }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+              <span style={{ fontSize: 14, fontWeight: 700, minWidth: 14, textAlign: 'center' }}>{participants.length}</span>
+              {isHost && waitingRequests.length > 0 && <div style={{ position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: '50%', background: '#FF6B8A', border: '2px solid #0A0D18', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800, color: '#fff' }}>{waitingRequests.length}</div>}
+            </button>
+            <Divider />
+            <LeaveButton isHost={isHost} leaving={leaving} ending={ending} onLeave={handleLeave} onEnd={handleEnd} />
+          </div>
+        </div>
+      )}
 
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
 
@@ -678,6 +700,14 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
         @keyframes panelSlideIn {
           from { opacity: 0; transform: translateX(100%); }
           to   { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes panelSlideOut {
+          from { opacity: 1; transform: translateX(0); }
+          to   { opacity: 0; transform: translateX(100%); }
+        }
+        @keyframes slideUp {
+          from { opacity: 0; transform: translateY(12px); }
+          to   { opacity: 1; transform: translateY(0); }
         }
         @keyframes captionIn {
           from { opacity: 0; transform: translateY(6px); }
@@ -1108,7 +1138,9 @@ function MeetTile({ track, localUser, userInfoMap, avatarSize = 120 }) {
 
   const remoteInfo = userInfoMap?.[participant.identity] || {}
   const avatarUrl  = isLocal ? (localUser?.avatar_url || '') : (remoteInfo.avatar_url || '')
-  const name       = participant.name || remoteInfo.display_name || participant.identity || '?'
+  const name       = isLocal
+    ? (localUser?.display_name || participant.name || participant.identity || '?')
+    : (participant.name || remoteInfo.display_name || participant.identity || '?')
   const label      = name + (isLocal ? ' (bạn)' : '')
 
   return (
@@ -1202,7 +1234,9 @@ function ParticipantsPanel({ participants, userInfoMap, localUser, hostId, isHos
     str.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'd').toLowerCase()
 
   const filtered = participants.filter(p => {
-    const name = p.name || userInfoMap?.[p.identity]?.display_name || p.identity || ''
+    const name = p.isLocal
+      ? (localUser?.display_name || p.name || p.identity || '')
+      : (p.name || userInfoMap?.[p.identity]?.display_name || p.identity || '')
     return normalize(name).includes(normalize(query))
   })
 
@@ -1331,7 +1365,9 @@ function ParticipantsPanel({ participants, userInfoMap, localUser, hostId, isHos
       {filtered.map(p => {
         const remoteInfo = userInfoMap?.[p.identity] || {}
         const avatarUrl  = p.isLocal ? (localUser?.avatar_url || '') : (remoteInfo.avatar_url || '')
-        const name       = p.name || remoteInfo.display_name || p.identity || '?'
+        const name       = p.isLocal
+          ? (localUser?.display_name || p.name || p.identity || '?')
+          : (p.name || remoteInfo.display_name || p.identity || '?')
         return (
           <div key={p.identity} style={{
             display: 'flex', alignItems: 'center', gap: 10,
@@ -1478,14 +1514,15 @@ function KickBtn({ participantId, meetingId, accessToken, name }) {
 const SUBTITLE_SIZE = { small: 16, medium: 20, large: 26, xl: 34 }
 const SUBTITLE_FONT = { system: 'inherit', mono: '"JetBrains Mono", monospace' }
 
-function SubtitleOverlay({ captions, localUserId, subtitleSize, subtitleFont }) {
+function SubtitleOverlay({ captions, localUserId, subtitleSize, subtitleFont, userInfoMap }) {
   const others   = captions.filter(c => c.speaker_id !== localUserId)
   const latest   = others[others.length - 1]
   const fontSize  = SUBTITLE_SIZE[subtitleSize]  ?? 20
   const fontFamily = SUBTITLE_FONT[subtitleFont] ?? 'inherit'
 
   if (!latest) return null
-  const color = speakerColor(latest.speaker_id)
+  const color = participantColor(latest.speaker_id)
+  const speakerDisplayName = userInfoMap?.[latest.speaker_id]?.display_name || latest.speaker_name
   return (
     <div style={{
       position: 'absolute', bottom: 24, left: '50%', transform: 'translateX(-50%)',
@@ -1503,7 +1540,7 @@ function SubtitleOverlay({ captions, localUserId, subtitleSize, subtitleFont }) 
           fontFamily, whiteSpace: 'nowrap', flexShrink: 0,
           letterSpacing: '0.02em',
         }}>
-          {latest.speaker_name}
+          {speakerDisplayName}
         </span>
         <span style={{ fontSize, fontWeight: 500, color: '#fff', lineHeight: 1.55, fontFamily }}>
           {latest.text}
@@ -1513,12 +1550,12 @@ function SubtitleOverlay({ captions, localUserId, subtitleSize, subtitleFont }) 
   )
 }
 
-/* ── Speaker color ──────────────────────────────────────────────────────── */
-const SPEAKER_COLORS = ['#00C9B8','#A78BFA','#60A5FA','#FB923C','#34D399','#F472B6','#FBBF24','#818CF8']
-function speakerColor(id = '') {
+/* ── Participant color — single source of truth keyed by user ID ────────── */
+const PARTICIPANT_COLORS = ['#00C9B8','#A78BFA','#60A5FA','#FB923C','#34D399','#F472B6','#FBBF24','#818CF8']
+function participantColor(id = '') {
   let h = 0
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
-  return SPEAKER_COLORS[h % SPEAKER_COLORS.length]
+  return PARTICIPANT_COLORS[h % PARTICIPANT_COLORS.length]
 }
 
 /* ── Meeting content panel ──────────────────────────────────────────────── */
@@ -1588,7 +1625,10 @@ function MeetingContentPanel({ captions, ttsMessages, replayLog = [], userInfoMa
     if (last && last.speaker_id === c.speaker_id) {
       last.items.push(c)
     } else {
-      groups.push({ speaker_id: c.speaker_id, speaker_name: c.speaker_name, color: speakerColor(c.speaker_id), items: [c] })
+      const liveDisplayName = c.speaker_id === localUser?.id
+        ? (localUser?.display_name || c.speaker_name)
+        : (userInfoMap?.[c.speaker_id]?.display_name || c.speaker_name)
+      groups.push({ speaker_id: c.speaker_id, speaker_name: liveDisplayName, color: participantColor(c.speaker_id), items: [c] })
     }
   })
 
@@ -1645,7 +1685,7 @@ function MeetingContentPanel({ captions, ttsMessages, replayLog = [], userInfoMa
             <div style={{ height: 1, background: 'rgba(167,139,250,0.12)', marginBottom: 10 }} />
 
             {/* Bullet points with inline bold rendering */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7, maxHeight: 220, overflowY: 'auto', paddingRight: 2 }}>
               {summary.split('\n').filter(l => l.trim()).map((line, i) => {
                 const text = line.replace(/^(\d+\.|[-•*])\s*/, '')
                 const parts = text.split(/\*\*(.*?)\*\*/g)
@@ -1808,12 +1848,6 @@ function _autoLink(text) {
   return text.replace(/(^|[\s,])(https?:\/\/[^\s<>"')\]]+)/g, (_, pre, url) => `${pre}[${url}](${url})`)
 }
 
-const CHAT_COLORS = ['#00C9B8', '#A78BFA', '#FB923C', '#34D399', '#60A5FA', '#F472B6', '#FCD34D']
-function senderColor(name = '') {
-  let h = 5381
-  for (let i = 0; i < name.length; i++) h = (h * 33 ^ name.charCodeAt(i)) >>> 0
-  return CHAT_COLORS[h % CHAT_COLORS.length]
-}
 function isSameGroup(a, b) {
   return !!a && !!b && a.sender_id === b.sender_id && b.timestamp_ms - a.timestamp_ms < 3 * 60 * 1000
 }
@@ -1941,7 +1975,7 @@ function MarkdownMessage({ content, mdReady, onLinkClick }) {
   )
 }
 
-function ChatPanel({ messages, onSend, localUserId }) {
+function ChatPanel({ messages, onSend, localUserId, userInfoMap = {}, localUser }) {
   const [text, setText]             = useState('')
   const [pendingLink, setPendingLink] = useState(null)
   const [atBottom, setAtBottom]     = useState(true)
@@ -2044,42 +2078,48 @@ function ChatPanel({ messages, onSend, localUserId }) {
           const mine = m.sender_id === localUserId
           const grouped = isSameGroup(prev, m)
           const isLastInGroup = !isSameGroup(m, next)
-          const color = senderColor(m.sender_name)
+          const color = participantColor(m.sender_id)
 
           return (
-            <div key={m.id} style={{ display: 'flex', flexDirection: mine ? 'row-reverse' : 'row', alignItems: 'flex-end', gap: 7, padding: '0 12px', marginTop: grouped ? 2 : (i === 0 ? 6 : 10), animation: 'chatIn 0.18s cubic-bezier(0.22,1,0.36,1)' }}>
+            <div key={m.id} style={{ padding: '0 12px', marginTop: grouped ? 2 : (i === 0 ? 6 : 12), animation: 'chatIn 0.18s cubic-bezier(0.22,1,0.36,1)' }}>
 
-              {/* Avatar — others only, hidden when grouped */}
-              {!mine && (
-                <div style={{ width: 26, height: 26, borderRadius: '50%', flexShrink: 0, background: !grouped ? color + '20' : 'transparent', border: !grouped ? `1px solid ${color}50` : 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, color, visibility: !grouped ? 'visible' : 'hidden', alignSelf: 'flex-end', marginBottom: 2 }}>
-                  {!grouped && (m.sender_name?.[0] ?? '?').toUpperCase()}
+              {/* Speaker header — same style as Nội dung, others only, first in group */}
+              {!mine && !grouped && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 6 }}>
+                  <UserAvatar
+                    name={userInfoMap[m.sender_id]?.display_name || m.sender_name}
+                    avatarUrl={userInfoMap[m.sender_id]?.avatar_url}
+                    size={30}
+                  />
+                  <span style={{ fontSize: 13, fontWeight: 700, color }}>{userInfoMap[m.sender_id]?.display_name || m.sender_name}</span>
                 </div>
               )}
 
-              <div style={{ maxWidth: '80%', minWidth: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', alignItems: mine ? 'flex-end' : 'flex-start' }}>
-                {/* Sender name */}
-                {!mine && !grouped && (
-                  <span style={{ fontSize: 10, fontWeight: 700, color, marginBottom: 3, paddingLeft: 2, letterSpacing: '0.01em' }}>{m.sender_name}</span>
-                )}
-
-                {/* Bubble */}
+              {/* Bubble row */}
+              <div style={{ display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start' }}>
                 <div style={{
-                  padding: '8px 12px',
-                  width: '100%', boxSizing: 'border-box', overflow: 'hidden',
-                  borderRadius: mine
-                    ? (grouped ? '14px 4px 4px 14px' : '14px 14px 4px 14px')
-                    : (grouped ? '4px 14px 14px 4px' : '4px 14px 14px 14px'),
-                  background: mine ? 'rgba(0,201,184,0.13)' : 'rgba(255,255,255,0.07)',
-                  border: `1px solid ${mine ? 'rgba(0,201,184,0.2)' : 'rgba(255,255,255,0.07)'}`,
+                  marginLeft: !mine ? 39 : 0,
+                  maxWidth: mine ? '80%' : 'calc(100% - 39px)',
+                  minWidth: 0, overflow: 'hidden',
+                  display: 'flex', flexDirection: 'column', alignItems: mine ? 'flex-end' : 'flex-start',
                 }}>
-                  <MarkdownMessage content={m.text} mdReady={mdReady} onLinkClick={setPendingLink} />
+                  <div style={{
+                    padding: '8px 12px',
+                    width: '100%', boxSizing: 'border-box', overflow: 'hidden',
+                    borderRadius: mine
+                      ? (isLastInGroup ? '14px 14px 4px 14px' : '14px 4px 4px 14px')
+                      : (isLastInGroup ? '4px 14px 14px 14px' : '4px 14px 14px 4px'),
+                    background: mine ? 'rgba(0,201,184,0.13)' : 'rgba(255,255,255,0.07)',
+                    border: `1px solid ${mine ? 'rgba(0,201,184,0.2)' : 'rgba(255,255,255,0.07)'}`,
+                  }}>
+                    <MarkdownMessage content={m.text} mdReady={mdReady} onLinkClick={setPendingLink} />
+                  </div>
+                  {isLastInGroup && (
+                    <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>{fmt(m.timestamp_ms)}</span>
+                  )}
                 </div>
-
-                {/* Timestamp — only last in group */}
-                {isLastInGroup && (
-                  <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.2)', marginTop: 4, paddingLeft: 2, paddingRight: 2 }}>{fmt(m.timestamp_ms)}</span>
-                )}
               </div>
+
             </div>
           )
         })}
@@ -2525,7 +2565,7 @@ function LeaveButton({ isHost, leaving, ending, onLeave, onEnd }) {
         disabled={leaving}
         title="Rời phòng"
         style={{
-          width: 42, height: 42, borderRadius: 12,
+          width: 52, height: 52, borderRadius: 14,
           background: leaving ? 'rgba(255,255,255,0.06)' : 'rgba(15,18,32,0.95)',
           border: '1px solid rgba(255,69,69,0.3)',
           color: leaving ? 'rgba(255,255,255,0.3)' : '#FF5555',
@@ -2551,7 +2591,7 @@ function LeaveButton({ isHost, leaving, ending, onLeave, onEnd }) {
         disabled={busy}
         title="Rời / Kết thúc"
         style={{
-          width: 42, height: 42, borderRadius: 12,
+          width: 52, height: 52, borderRadius: 14,
           background: open ? '#FF3B3B' : (busy ? 'rgba(255,255,255,0.06)' : 'rgba(15,18,32,0.95)'),
           border: `1px solid ${open ? '#FF3B3B' : 'rgba(255,69,69,0.3)'}`,
           color: open ? '#fff' : (busy ? 'rgba(255,255,255,0.3)' : '#FF5555'),
@@ -2624,6 +2664,152 @@ function LeaveButton({ isHost, leaving, ending, onLeave, onEnd }) {
         }
       `}</style>
     </div>
+  )
+}
+
+/* ── Copy code button with hover dropdown ───────────────────────────────── */
+function CopyCodeBtn({ roomCode, compact = false, isMobile = false }) {
+  const [open, setOpen]     = useState(false)
+  const [tip, setTip]       = useState(null) // 'code' | 'link' | null
+  const closeTimer          = useRef(null)
+  const ref                 = useRef(null)
+
+  function flash(which) {
+    setTip(which)
+    setTimeout(() => setTip(null), 1800)
+  }
+
+  function copyCode() {
+    navigator.clipboard.writeText(roomCode).catch(() => {})
+    flash('code')
+    setOpen(false)
+  }
+
+  function copyLink() {
+    const link = `${window.location.origin}/meeting/${roomCode}`
+    navigator.clipboard.writeText(link).catch(() => {})
+    flash('link')
+    setOpen(false)
+  }
+
+  function onMouseEnter() {
+    if (isMobile) return
+    clearTimeout(closeTimer.current)
+    setOpen(true)
+  }
+
+  function onMouseLeave() {
+    if (isMobile) return
+    closeTimer.current = setTimeout(() => setOpen(false), 180)
+  }
+
+  // Close on outside click (mobile)
+  useEffect(() => {
+    if (!isMobile || !open) return
+    function onOutside(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('touchstart', onOutside)
+    document.addEventListener('mousedown', onOutside)
+    return () => { document.removeEventListener('touchstart', onOutside); document.removeEventListener('mousedown', onOutside) }
+  }, [isMobile, open])
+
+  return (
+    <div
+      ref={ref}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      style={{ position: 'relative', display: 'inline-flex' }}
+    >
+      {/* Trigger */}
+      <button onClick={isMobile ? () => setOpen(o => !o) : undefined} style={{
+        display: 'flex', alignItems: 'center', gap: compact ? 4 : 6,
+        padding: compact ? '3px 8px' : '5px 10px',
+        borderRadius: compact ? 6 : 7,
+        border: `1px solid ${open ? 'rgba(0,201,184,0.3)' : 'rgba(255,255,255,0.08)'}`,
+        background: open ? 'rgba(0,201,184,0.08)' : 'rgba(255,255,255,0.05)',
+        cursor: 'pointer', color: '#fff', transition: 'all 0.15s',
+        fontFamily: 'inherit',
+      }}>
+        <span style={{ fontSize: compact ? 11 : 12, fontWeight: 700, letterSpacing: '0.08em', color: open ? '#00C9B8' : 'rgba(255,255,255,0.8)' }}>
+          {roomCode}
+        </span>
+        {tip ? (
+          <span style={{ fontSize: compact ? 9 : 10, color: '#00C9B8', fontWeight: 700 }}>✓</span>
+        ) : (
+          <svg width={compact ? 9 : 10} height={compact ? 9 : 10} viewBox="0 0 24 24" fill="none" stroke={open ? '#00C9B8' : 'rgba(255,255,255,0.35)'} strokeWidth="2">
+            <rect x="9" y="9" width="13" height="13" rx="2"/>
+            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+          </svg>
+        )}
+      </button>
+
+      {/* Dropdown */}
+      {open && (
+        <div
+          onMouseEnter={onMouseEnter}
+          onMouseLeave={onMouseLeave}
+          style={{
+            position: 'absolute', bottom: 'calc(100% + 8px)', left: 0,
+            minWidth: 190, zIndex: 300,
+            background: '#12172A', border: '1px solid rgba(255,255,255,0.1)',
+            borderRadius: 12, overflow: 'hidden',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+            animation: 'dropUp 0.15s cubic-bezier(0.22,1,0.36,1)',
+          }}
+        >
+          <CopyDropItem
+            onClick={copyCode}
+            active={tip === 'code'}
+            icon={
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="9" y="9" width="13" height="13" rx="2"/>
+                <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+              </svg>
+            }
+            label="Sao chép mã phòng"
+            value={roomCode}
+          />
+          <div style={{ height: 1, background: 'rgba(255,255,255,0.05)', margin: '0 12px' }} />
+          <CopyDropItem
+            onClick={copyLink}
+            active={tip === 'link'}
+            icon={
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/>
+                <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>
+              </svg>
+            }
+            label="Sao chép đường link"
+            value={`${window.location.origin}/meeting/${roomCode}`}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CopyDropItem({ onClick, icon, label, value, active }) {
+  const [hovered, setHovered] = useState(false)
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        width: '100%', padding: '10px 14px', border: 'none', textAlign: 'left',
+        background: hovered ? 'rgba(255,255,255,0.05)' : 'transparent',
+        cursor: 'pointer', fontFamily: 'inherit', transition: 'background 0.12s',
+        display: 'flex', alignItems: 'center', gap: 10,
+        color: active ? '#00C9B8' : 'rgba(255,255,255,0.75)',
+      }}
+    >
+      <span style={{ flexShrink: 0, display: 'flex', color: active ? '#00C9B8' : 'rgba(255,255,255,0.4)' }}>{icon}</span>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 2 }}>{active ? 'Đã sao chép!' : label}</div>
+        <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.25)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</div>
+      </div>
+    </button>
   )
 }
 

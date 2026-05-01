@@ -2,6 +2,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import useStore from '../store'
 import UserAvatar from '../components/UserAvatar'
+import useBreakpoint from '../hooks/useBreakpoint'
 
 /* ─── Scroll-reveal hook ─── */
 function useReveal(containerRef) {
@@ -158,16 +159,16 @@ const FEATURES = [
 ]
 
 const TEAM = [
-  { name: 'Đỗ Phạm Bảo Hoàng', role: 'cốt ngày cốt đêm', color: '#00D4C0', photo: '/images/team/member-1.JPG', pos: '50% 10%' },
-  { name: 'Phạm Đỗ Hồ Đoãng',  role: 'làm mẫu cho web',  color: '#A78BFA', photo: '/images/team/member-2.JPG', pos: '50% 15%' },
-  { name: 'DekTheDev',          role: 'cool pose',         color: '#FB923C', photo: '/images/team/member-3.JPG', pos: '50% 16%' },
-  { name: 'hoanghero125',       role: 'git commit',        color: '#34D399', photo: '/images/team/member-4.JPG', pos: '50% 16%' },
+  { name: 'Trần Kiều Minh Dũng', role: 'Solution Architect', color: '#00D4C0', photo: '/images/team/member-1.JPG', pos: '50% 18%' },
+  { name: 'Vương Trí Bách', role: 'Front-end Developer',  color: '#A78BFA', photo: '/images/team/member-2.jpg', pos: '50% 23%' },
+  { name: 'Dương Đỗ Hoàng', role: 'UI/UX Designer', color: '#FB923C', photo: '/images/team/member-3.jpg', pos: '50% 23%' },
+  { name: 'Đỗ Phạm Bảo Hoàng', role: 'Technical Lead', color: '#34D399', photo: '/images/team/member-4.jpg', pos: '50% 15%' },
 ]
 
 const STATS = [
   { value: '<200ms', label: 'Độ trễ phụ đề',    color: '#00D4C0' },
-  { value: '4+',     label: 'Ngôn ngữ hỗ trợ',  color: '#A78BFA' },
-  { value: '99%',    label: 'Độ chính xác STT',  color: '#FB923C' },
+  { value: '1000+',     label: 'Giọng nói hỗ trợ',  color: '#A78BFA' },
+  { value: '90%',    label: 'Độ chính xác STT',  color: '#FB923C' },
   { value: '0',      label: 'Plugin cần cài',     color: '#34D399' },
 ]
 
@@ -179,6 +180,7 @@ export default function LandingPage() {
   const { user, accessToken, logout } = useStore()
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const isLoggedIn = !!accessToken
+  const { isMobile, isTablet } = useBreakpoint()
 
   useEffect(() => {
     const el = containerRef.current
@@ -272,12 +274,12 @@ export default function LandingPage() {
         transition: 'all 0.4s ease',
         boxShadow: scrolled ? '0 1px 32px rgba(0,0,0,0.5)' : 'none',
       }}>
-        <div style={{ maxWidth: 1280, margin: '0 auto', padding: '0 52px', height: 64, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ maxWidth: 1280, margin: '0 auto', padding: isMobile ? '0 20px' : '0 52px', height: 64, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <Logo />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 36 }}>
+          {!isMobile && <div style={{ display: 'flex', alignItems: 'center', gap: 36 }}>
             <button onClick={() => scrollTo('features')} className="nav-btn" style={{ fontSize: 14, fontWeight: 500, color: 'rgba(255,255,255,0.42)', background: 'none', border: 'none', cursor: 'pointer', transition: 'color 0.2s', padding: 0, fontFamily: 'inherit' }}>Tính năng</button>
             <button onClick={() => scrollTo('stats')}    className="nav-btn" style={{ fontSize: 14, fontWeight: 500, color: 'rgba(255,255,255,0.42)', background: 'none', border: 'none', cursor: 'pointer', transition: 'color 0.2s', padding: 0, fontFamily: 'inherit' }}>Về chúng tôi</button>
-          </div>
+          </div>}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {isLoggedIn ? (
               <div style={{ position: 'relative' }}>
@@ -358,9 +360,9 @@ export default function LandingPage() {
       {/* ════ HERO ════ */}
       <section style={{
         minHeight: 'calc(100vh - 64px)',
-        display: 'grid', gridTemplateColumns: '1fr 1fr',
-        alignItems: 'center', gap: 60,
-        padding: '60px 52px 80px',
+        display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr',
+        alignItems: 'center', gap: isMobile ? 40 : 60,
+        padding: isMobile ? '40px 20px 60px' : isTablet ? '60px 32px 80px' : '60px 52px 80px',
         maxWidth: 1280, margin: '0 auto',
         position: 'relative',
       }}>
@@ -466,7 +468,7 @@ export default function LandingPage() {
         </div>
 
         {/* Right — ring */}
-        <div className="h-ring" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', position: 'relative', zIndex: 1 }}>
+        <div className="h-ring" style={{ display: isMobile ? 'none' : 'flex', justifyContent: 'center', alignItems: 'center', position: 'relative', zIndex: 1 }}>
           <div style={{
             transform: `perspective(900px) rotateX(${gy * 0.025}rad) rotateY(${gx * 0.025}rad)`,
             transition: 'transform 0.15s ease',
@@ -523,7 +525,7 @@ export default function LandingPage() {
 
       {/* ════ STATS ════ */}
       <div style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-        <div style={{ maxWidth: 1280, margin: '0 auto', display: 'grid', gridTemplateColumns: 'repeat(4,1fr)' }}>
+        <div style={{ maxWidth: 1280, margin: '0 auto', display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(4,1fr)' }}>
           {STATS.map((s, i) => (
             <div key={i} className={`stat-cell reveal reveal-delay-${i+1}`} style={{ padding: '52px 0', textAlign: 'center', position: 'relative' }}>
               <div style={{
@@ -543,7 +545,7 @@ export default function LandingPage() {
       </div>
 
       {/* ════ FEATURES ════ */}
-      <section style={{ padding: '130px 52px', maxWidth: 1280, margin: '0 auto' }}>
+      <section style={{ padding: isMobile ? '80px 20px' : isTablet ? '100px 32px' : '130px 52px', maxWidth: 1280, margin: '0 auto' }}>
         <span id="features" style={{ display: 'block', scrollMarginTop: 88 }} />
         <div className="reveal" style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 64, gap: 40, flexWrap: 'wrap' }}>
           <div>
@@ -557,16 +559,16 @@ export default function LandingPage() {
           </p>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
-          <FeatureCard f={FEATURES[0]} style={{ gridColumn: '1 / 3' }} delay={1}/>
-          <FeatureCard f={FEATURES[1]} style={{ gridColumn: '3 / 4' }} delay={2}/>
-          <FeatureCard f={FEATURES[2]} style={{ gridColumn: '1 / 2' }} delay={1}/>
-          <FeatureCard f={FEATURES[3]} style={{ gridColumn: '2 / 4' }} delay={2}/>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: 16 }}>
+          <FeatureCard f={FEATURES[0]} style={{ gridColumn: isMobile ? undefined : '1 / 3' }} delay={1}/>
+          <FeatureCard f={FEATURES[1]} style={{ gridColumn: isMobile ? undefined : '3 / 4' }} delay={2}/>
+          <FeatureCard f={FEATURES[2]} style={{ gridColumn: isMobile ? undefined : '1 / 2' }} delay={1}/>
+          <FeatureCard f={FEATURES[3]} style={{ gridColumn: isMobile ? undefined : '2 / 4' }} delay={2}/>
         </div>
       </section>
 
       {/* ════ TEAM ════ */}
-      <section style={{ padding: '0 52px 130px', maxWidth: 1280, margin: '0 auto' }}>
+      <section style={{ padding: isMobile ? '0 20px 80px' : isTablet ? '0 32px 100px' : '0 52px 130px', maxWidth: 1280, margin: '0 auto' }}>
         <span id="stats" style={{ display: 'block', scrollMarginTop: 88 }} />
         <div className="reveal" style={{ marginBottom: 64 }}>
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.16em', color: '#A78BFA', textTransform: 'uppercase', marginBottom: 14 }}>— Về chúng tôi</div>
@@ -576,7 +578,7 @@ export default function LandingPage() {
           </h2>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 20 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : isTablet ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)', gap: 20 }}>
           {TEAM.map((m, i) => (
             <div key={i} className={`reveal reveal-delay-${i + 1}`} style={{
               background: 'rgba(255,255,255,0.022)',
@@ -617,13 +619,13 @@ export default function LandingPage() {
       </section>
 
       {/* ════ CTA ════ */}
-      <section style={{ padding: '0 52px 140px', maxWidth: 1280, margin: '0 auto' }}>
+      <section style={{ padding: isMobile ? '0 20px 80px' : isTablet ? '0 32px 100px' : '0 52px 140px', maxWidth: 1280, margin: '0 auto' }}>
         <div className="reveal" style={{
           position: 'relative', overflow: 'hidden', borderRadius: 24,
           background: 'linear-gradient(135deg, rgba(0,212,192,0.09) 0%, rgba(167,139,250,0.07) 50%, rgba(0,153,204,0.06) 100%)',
           border: '1px solid rgba(0,212,192,0.2)',
-          padding: '88px 72px',
-          display: 'grid', gridTemplateColumns: '1fr auto', gap: 60, alignItems: 'center',
+          padding: isMobile ? '48px 28px' : isTablet ? '64px 48px' : '88px 72px',
+          display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr auto', gap: isMobile ? 32 : 60, alignItems: 'center',
           boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)',
         }}>
           {/* Background grid inside CTA */}
@@ -684,11 +686,11 @@ export default function LandingPage() {
       {/* ════ FOOTER ════ */}
       <footer style={{
         borderTop: '1px solid rgba(255,255,255,0.06)',
-        padding: '28px 52px', maxWidth: '100%',
+        padding: isMobile ? '24px 20px' : '28px 52px', maxWidth: '100%',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         background: '#050810', position: 'relative', zIndex: 1,
       }}>
-        <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.18)', margin: 0 }}>© 2026 Syltalky. All rights reserved.</p>
+        <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.18)', margin: 0 }}>© 2026 Syltalky · All rights reserved.</p>
       </footer>
     </div>
   )

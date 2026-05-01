@@ -2,9 +2,11 @@ import { useState } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { api } from '../../api/client'
 import AuthLeft from './AuthLeft'
+import useBreakpoint from '../../hooks/useBreakpoint'
 
 export default function ResetPasswordScreen() {
   const navigate = useNavigate()
+  const { isMobile } = useBreakpoint()
   const [params] = useSearchParams()
   const token = params.get('token') || ''
   const [password, setPassword] = useState('')
@@ -29,9 +31,9 @@ export default function ResetPasswordScreen() {
 
   return (
     <div style={{ width: '100vw', height: '100vh', display: 'flex', overflow: 'hidden', background: '#07090F' }}>
-      <AuthLeft />
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '60px 64px', overflowY: 'auto' }}>
-        <form onSubmit={submit} style={{ maxWidth: 360, width: '100%' }}>
+      {!isMobile && <AuthLeft />}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: isMobile ? '40px 24px' : '60px 64px', overflowY: 'auto' }}>
+        <form onSubmit={submit} style={{ maxWidth: 360, width: '100%', alignSelf: isMobile ? 'center' : 'auto' }}>
           <p style={{ fontSize: 12, color: '#00C9B8', fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 10 }}>
             Đặt lại mật khẩu
           </p>

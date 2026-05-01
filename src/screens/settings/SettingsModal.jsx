@@ -4,6 +4,7 @@ import OverviewPanel from './OverviewPanel'
 import DevicesPanel from './DevicesPanel'
 import SubtitlesPanel from './SubtitlesPanel'
 import VoicePanel from './VoicePanel'
+import useBreakpoint from '../../hooks/useBreakpoint'
 
 const NAV = [
   {
@@ -36,7 +37,9 @@ const NAV = [
 
 export default function SettingsModal({ onClose }) {
   const [tab, setTab] = useState('profile')
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const user = useStore(s => s.user)
+  const { isMobile } = useBreakpoint()
 
   useEffect(() => {
     const handler = (e) => { if (e.key === 'Escape') onClose() }
@@ -70,16 +73,61 @@ export default function SettingsModal({ onClose }) {
       <div
         onClick={e => e.stopPropagation()}
         style={{
-          width: 800, maxHeight: '86vh',
+          width: isMobile ? '100%' : 800,
+          height: isMobile ? '100%' : 'auto',
+          maxHeight: isMobile ? '100%' : '86vh',
           background: '#0B0D12',
-          borderRadius: 20,
-          border: '1px solid rgba(255,255,255,0.07)',
-          boxShadow: '0 40px 100px rgba(0,0,0,0.7), 0 0 0 1px rgba(0,201,184,0.04)',
-          display: 'flex', overflow: 'hidden',
+          borderRadius: isMobile ? 0 : 20,
+          border: isMobile ? 'none' : '1px solid rgba(255,255,255,0.07)',
+          boxShadow: isMobile ? 'none' : '0 40px 100px rgba(0,0,0,0.7), 0 0 0 1px rgba(0,201,184,0.04)',
+          display: 'flex', flexDirection: isMobile ? 'column' : 'row',
+          overflow: 'hidden',
           animation: 'modal-in 0.2s cubic-bezier(0.22,1,0.36,1)',
         }}
       >
-        {/* ── Left sidebar ── */}
+        {/* ── Left sidebar (desktop) / Top tab bar (mobile) ── */}
+        {isMobile ? (
+          <div style={{
+            flexShrink: 0, background: '#080A0F',
+            borderBottom: '1px solid rgba(255,255,255,0.05)',
+          }}>
+            {/* Mobile header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px' }}>
+              <span style={{ fontSize: 15, fontWeight: 700, color: '#fff' }}>
+                {NAV.flatMap(g => g.items).find(i => i.id === tab)?.label ?? 'Cài đặt'}
+              </span>
+              <button onClick={onClose} style={{
+                width: 30, height: 30, borderRadius: 8, border: 'none',
+                background: 'rgba(255,255,255,0.07)', color: 'rgba(255,255,255,0.5)',
+                cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>✕</button>
+            </div>
+            {/* Horizontal tab scroll */}
+            <div style={{ display: 'flex', gap: 4, padding: '0 12px 12px', overflowX: 'auto' }}>
+              {NAV.flatMap(g => g.items).map(item => {
+                const active = tab === item.id
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => setTab(item.id)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 6,
+                      padding: '7px 14px', borderRadius: 8, flexShrink: 0,
+                      border: active ? '1px solid rgba(0,201,184,0.25)' : '1px solid rgba(255,255,255,0.07)',
+                      background: active ? 'rgba(0,201,184,0.1)' : 'transparent',
+                      color: active ? '#00C9B8' : 'rgba(255,255,255,0.45)',
+                      fontFamily: 'inherit', fontSize: 13, fontWeight: active ? 600 : 400,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <span style={{ opacity: active ? 1 : 0.6, display: 'flex' }}>{item.icon}</span>
+                    {item.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ) : (
         <div style={{
           width: 220, flexShrink: 0,
           background: '#080A0F',
@@ -160,10 +208,12 @@ export default function SettingsModal({ onClose }) {
             <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.15)' }}>PROPTIT · SylItalky</div>
           </div>
         </div>
+        )}
 
         {/* ── Content area ── */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          {/* Content header */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
+          {/* Content header — desktop only */}
+          {!isMobile && (
           <div style={{
             padding: '22px 32px 0',
             borderBottom: '1px solid rgba(255,255,255,0.05)',
@@ -188,9 +238,10 @@ export default function SettingsModal({ onClose }) {
               >✕</button>
             </div>
           </div>
+          )}
 
           {/* Scrollable content */}
-          <div className="settings-scroll" style={{ flex: 1, overflowY: 'auto', padding: '28px 32px' }}>
+          <div className="settings-scroll" style={{ flex: 1, overflowY: 'auto', padding: isMobile ? '20px 16px' : '28px 32px' }}>
             {tab === 'profile'   && <OverviewPanel />}
             {tab === 'devices'   && <DevicesPanel />}
             {tab === 'subtitles' && <SubtitlesPanel />}

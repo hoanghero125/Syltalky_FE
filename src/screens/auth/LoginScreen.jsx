@@ -4,10 +4,12 @@ import { useGoogleLogin } from '@react-oauth/google'
 import { api } from '../../api/client'
 import useStore from '../../store'
 import AuthLeft from './AuthLeft'
+import useBreakpoint from '../../hooks/useBreakpoint'
 
 export default function LoginScreen() {
   const navigate = useNavigate()
   const { setUser, setTokens } = useStore()
+  const { isMobile } = useBreakpoint()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPass, setShowPass] = useState(false)
@@ -51,9 +53,9 @@ export default function LoginScreen() {
 
   return (
     <div style={{ width: '100vw', height: '100vh', display: 'flex', overflow: 'hidden', background: '#07090F' }}>
-      <AuthLeft />
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '60px 64px', overflowY: 'auto' }}>
-        <form onSubmit={submit} style={{ maxWidth: 360, width: '100%' }}>
+      {!isMobile && <AuthLeft />}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: isMobile ? '40px 24px' : '60px 64px', overflowY: 'auto' }}>
+        <form onSubmit={submit} style={{ maxWidth: 360, width: '100%', alignSelf: isMobile ? 'center' : 'auto' }}>
           <p style={{ fontSize: 12, color: '#00C9B8', fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 10 }}>
             Chào mừng trở lại
           </p>

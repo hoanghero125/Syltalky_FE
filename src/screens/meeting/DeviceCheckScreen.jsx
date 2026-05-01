@@ -3,11 +3,13 @@ import { useNavigate, useParams } from 'react-router-dom'
 import useStore from '../../store'
 import { meetingsApi } from '../../api/meetings'
 import UserAvatar from '../../components/UserAvatar'
+import useBreakpoint from '../../hooks/useBreakpoint'
 
 export default function DeviceCheckScreen() {
   const { roomCode } = useParams()
   const navigate = useNavigate()
   const { user, accessToken, mirrorCamera } = useStore()
+  const { isMobile } = useBreakpoint()
 
   const videoRef     = useRef(null)
   const streamRef    = useRef(null)
@@ -404,13 +406,18 @@ export default function DeviceCheckScreen() {
 
       {/* Main content */}
       <div style={{
-        flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-        padding: '32px 48px', gap: 52, position: 'relative', zIndex: 1,
-        minHeight: 0,
+        flex: 1, display: 'flex',
+        alignItems: isMobile ? 'flex-start' : 'center',
+        justifyContent: 'center',
+        flexDirection: isMobile ? 'column' : 'row',
+        padding: isMobile ? '20px 16px 32px' : '32px 48px',
+        gap: isMobile ? 24 : 52,
+        position: 'relative', zIndex: 1,
+        minHeight: 0, overflowY: isMobile ? 'auto' : 'hidden',
       }}>
 
         {/* ── Left: camera preview ── */}
-        <div style={{ flex: 1.3, display: 'flex', flexDirection: 'column', gap: 0, minWidth: 0 }}>
+        <div style={{ flex: isMobile ? 'none' : 1.3, width: isMobile ? '100%' : 'auto', display: 'flex', flexDirection: 'column', gap: 0, minWidth: 0 }}>
 
           {/* Preview window */}
           <div style={{
@@ -508,7 +515,7 @@ export default function DeviceCheckScreen() {
 
         {/* ── Right: join panel ── */}
         <div style={{
-          width: 320, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 0,
+          width: isMobile ? '100%' : 320, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 0,
         }}>
 
           {/* Header */}

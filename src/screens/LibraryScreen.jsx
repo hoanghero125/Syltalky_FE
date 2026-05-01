@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import useStore from '../store'
 import { meetingsApi } from '../api/meetings'
+import useBreakpoint from '../hooks/useBreakpoint'
 
 function timeAgo(iso) {
   if (!iso) return ''
@@ -28,6 +29,7 @@ function fmtDuration(start, end) {
 export default function LibraryScreen() {
   const navigate = useNavigate()
   const { accessToken } = useStore()
+  const { isMobile } = useBreakpoint()
   const [meetings, setMeetings] = useState([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
@@ -64,19 +66,19 @@ export default function LibraryScreen() {
       background: '#07090F',
     }}>
       <div aria-hidden style={{
-        position: 'fixed', top: 0, left: 240, right: 0, bottom: 0,
+        position: 'fixed', top: 0, left: isMobile ? 0 : 240, right: 0, bottom: 0,
         pointerEvents: 'none', zIndex: 0,
         background: 'radial-gradient(ellipse 50% 40% at 70% 20%, rgba(167,139,250,0.05) 0%, transparent 65%)',
       }} />
 
-      <div style={{ position: 'relative', zIndex: 1, padding: '44px 52px 64px' }}>
+      <div style={{ position: 'relative', zIndex: 1, padding: isMobile ? '20px 16px 48px' : '44px 52px 64px' }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 36 }}>
           <div>
             <p style={{ margin: '0 0 5px', fontSize: 13, fontWeight: 500, color: 'rgba(255,255,255,0.27)', letterSpacing: '0.01em' }}>
               Lịch sử
             </p>
-            <h1 style={{ margin: 0, fontSize: 38, fontWeight: 900, letterSpacing: '-1.3px', color: '#fff', lineHeight: 1.05 }}>
+            <h1 style={{ margin: 0, fontSize: isMobile ? 28 : 38, fontWeight: 900, letterSpacing: '-1.3px', color: '#fff', lineHeight: 1.05 }}>
               Thư viện
             </h1>
           </div>
@@ -88,8 +90,8 @@ export default function LibraryScreen() {
         </div>
 
         {/* Search + Date filter */}
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 32, flexWrap: 'wrap' }}>
-          <div style={{ position: 'relative', flex: '1 1 280px', maxWidth: 400 }}>
+        <div style={{ display: 'flex', gap: 12, alignItems: isMobile ? 'stretch' : 'center', marginBottom: 32, flexWrap: isMobile ? 'nowrap' : 'wrap', flexDirection: isMobile ? 'column' : 'row' }}>
+          <div style={{ position: 'relative', flex: isMobile ? 'none' : '1 1 280px', maxWidth: isMobile ? '100%' : 400, width: isMobile ? '100%' : 'auto' }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="2" strokeLinecap="round"
               style={{ position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
               <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -111,7 +113,7 @@ export default function LibraryScreen() {
           </div>
 
           {/* Date range */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, width: isMobile ? '100%' : 'auto' }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="2" strokeLinecap="round">
               <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
             </svg>
@@ -121,6 +123,7 @@ export default function LibraryScreen() {
               onChange={e => setDateFrom(e.target.value)}
               title="Từ ngày"
               style={{
+                flex: isMobile ? 1 : 'none',
                 padding: '10px 12px', borderRadius: 12,
                 background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)',
                 color: dateFrom ? '#fff' : 'rgba(255,255,255,0.3)', fontSize: 13, outline: 'none',
@@ -137,6 +140,7 @@ export default function LibraryScreen() {
               onChange={e => setDateTo(e.target.value)}
               title="Đến ngày"
               style={{
+                flex: isMobile ? 1 : 'none',
                 padding: '10px 12px', borderRadius: 12,
                 background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)',
                 color: dateTo ? '#fff' : 'rgba(255,255,255,0.3)', fontSize: 13, outline: 'none',
@@ -202,6 +206,7 @@ export default function LibraryScreen() {
 function MeetingRow({ meeting: m, onClick }) {
   const [hovered, setHovered] = useState(false)
   const hasSummary = !!m.summary
+  const { isMobile } = useBreakpoint()
 
   return (
     <div
@@ -275,15 +280,17 @@ function MeetingRow({ meeting: m, onClick }) {
       </div>
 
       {/* Date + time ago + chevron */}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flexShrink: 0 }}>
-        <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.55)', fontWeight: 600 }}>
-          {new Date(m.started_at).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' })}
-        </span>
-        <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.22)', fontWeight: 500 }}>{timeAgo(m.started_at)}</span>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="2" strokeLinecap="round">
-          <polyline points="9 18 15 12 9 6"/>
-        </svg>
-      </div>
+      {!isMobile && (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flexShrink: 0 }}>
+          <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.55)', fontWeight: 600 }}>
+            {new Date(m.started_at).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+          </span>
+          <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.22)', fontWeight: 500 }}>{timeAgo(m.started_at)}</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="2" strokeLinecap="round">
+            <polyline points="9 18 15 12 9 6"/>
+          </svg>
+        </div>
+      )}
     </div>
   )
 }
