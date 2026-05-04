@@ -15,8 +15,8 @@ export default function EmailVerifiedScreen() {
   }, [token])
 
   return (
-    <div style={{ width: '100vw', height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#07090F' }}>
-      <div style={{ textAlign: 'center', maxWidth: 400, padding: '0 24px' }}>
+    <div style={{ width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column', overflowY: 'auto', background: '#07090F' }}>
+      <div style={{ textAlign: 'center', maxWidth: 400, padding: '40px 24px', margin: 'auto', width: '100%', boxSizing: 'border-box' }}>
         {status === 'loading' && (
           <>
             <div style={{ fontSize: 48, marginBottom: 20 }}>⏳</div>

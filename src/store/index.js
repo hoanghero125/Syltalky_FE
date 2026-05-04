@@ -38,16 +38,20 @@ const useStore = create(
     }),
     {
       name: 'syltalky-store',
-      partialize: (state) => ({
-        user: state.user,
-        accessToken: state.accessToken,
-        refreshToken: state.refreshToken,
-        theme: state.theme,
-        language: state.language,
-        subtitleSize: state.subtitleSize,
-        subtitleFont: state.subtitleFont,
-        mirrorCamera: state.mirrorCamera,
-      }),
+      partialize: (state) => {
+        // Strip _avatarBlob (session-only blob URL) so it's never persisted to localStorage
+        const { _avatarBlob: _dropped, ...userRest } = state.user || {}
+        return {
+          user: state.user ? userRest : null,
+          accessToken: state.accessToken,
+          refreshToken: state.refreshToken,
+          theme: state.theme,
+          language: state.language,
+          subtitleSize: state.subtitleSize,
+          subtitleFont: state.subtitleFont,
+          mirrorCamera: state.mirrorCamera,
+        }
+      },
     }
   )
 )

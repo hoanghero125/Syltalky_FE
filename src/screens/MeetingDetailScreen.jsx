@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import useStore from '../store'
 import { meetingsApi } from '../api/meetings'
 import useBreakpoint from '../hooks/useBreakpoint'
+import UserAvatar from '../components/UserAvatar'
 
 function fmtDate(iso) {
   if (!iso) return '—'
@@ -154,28 +155,69 @@ export default function MeetingDetailScreen() {
         </div>
 
         {/* Tab switcher */}
-        <div style={{
-          display: 'flex', gap: 4, marginBottom: 28,
-          background: 'rgba(255,255,255,0.04)', borderRadius: 12, padding: 4,
-          width: isMobile ? '100%' : 'fit-content',
-        }}>
-          {[
-            { key: 'summary', label: 'Tóm tắt AI', color: '#A78BFA', bg: 'rgba(167,139,250,0.2)' },
-            { key: 'chat', label: 'Hỏi đáp', color: '#60A5FA', bg: 'rgba(96,165,250,0.15)' },
-            { key: 'transcript', label: `Bản ghi (${transcript.length})`, color: '#00C9B8', bg: 'rgba(0,201,184,0.15)' },
-          ].map(t => (
-            <button key={t.key} onClick={() => setTab(t.key)} style={{
-              padding: isMobile ? '8px 0' : '8px 20px', borderRadius: 9, border: 'none', cursor: 'pointer',
-              flex: isMobile ? 1 : 'none', flexShrink: 0,
-              background: tab === t.key ? t.bg : 'transparent',
-              color: tab === t.key ? t.color : 'rgba(255,255,255,0.35)',
-              fontSize: isMobile ? 12 : 13, fontWeight: 700, fontFamily: 'inherit', transition: 'all 0.15s',
-              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-            }}>
-              {t.label}
-            </button>
-          ))}
-        </div>
+        {isMobile ? (
+          <div style={{ marginBottom: 24, marginLeft: -16, marginRight: -16 }}>
+            <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+              {[
+                { key: 'summary', label: 'Tóm tắt', color: '#A78BFA',
+                  icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg> },
+                { key: 'chat', label: 'Hỏi đáp', color: '#60A5FA',
+                  icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg> },
+                { key: 'transcript', label: 'Bản ghi', color: '#00C9B8',
+                  icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg> },
+                { key: 'polls', label: 'Bình chọn', color: '#34D399',
+                  icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> },
+                { key: 'notes', label: 'Ghi chú', color: '#FBBF24',
+                  icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> },
+              ].map(t => {
+                const active = tab === t.key
+                return (
+                  <button key={t.key} onClick={() => setTab(t.key)} style={{
+                    flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+                    padding: '10px 4px 0', border: 'none', cursor: 'pointer',
+                    background: 'transparent', fontFamily: 'inherit', position: 'relative',
+                    color: active ? t.color : 'rgba(255,255,255,0.3)',
+                    transition: 'color 0.18s',
+                  }}>
+                    {t.icon}
+                    <span style={{ fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap' }}>{t.label}</span>
+                    <div style={{
+                      height: 2, width: active ? '60%' : '0%', borderRadius: 2,
+                      background: t.color, marginTop: 4,
+                      transition: 'width 0.22s cubic-bezier(0.4,0,0.2,1)',
+                      boxShadow: active ? `0 0 8px ${t.color}` : 'none',
+                    }} />
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ) : (
+          <div style={{
+            display: 'flex', gap: 4, marginBottom: 28,
+            background: 'rgba(255,255,255,0.04)', borderRadius: 12, padding: 4,
+            width: 'fit-content',
+          }}>
+            {[
+              { key: 'summary', label: 'Tóm tắt AI', color: '#A78BFA', bg: 'rgba(167,139,250,0.2)' },
+              { key: 'chat', label: 'Hỏi đáp', color: '#60A5FA', bg: 'rgba(96,165,250,0.15)' },
+              { key: 'transcript', label: `Bản ghi (${transcript.length})`, color: '#00C9B8', bg: 'rgba(0,201,184,0.15)' },
+              { key: 'polls', label: `Bình chọn${meeting.polls?.length ? ` (${meeting.polls.length})` : ''}`, color: '#34D399', bg: 'rgba(52,211,153,0.15)' },
+              { key: 'notes', label: `Ghi chú chung${meeting.notes?.length ? ` (${meeting.notes.length})` : ''}`, color: '#FBBF24', bg: 'rgba(251,191,36,0.15)' },
+            ].map(t => (
+              <button key={t.key} onClick={() => setTab(t.key)} style={{
+                padding: '8px 20px', borderRadius: 9, border: 'none', cursor: 'pointer',
+                flexShrink: 0,
+                background: tab === t.key ? t.bg : 'transparent',
+                color: tab === t.key ? t.color : 'rgba(255,255,255,0.35)',
+                fontSize: 13, fontWeight: 700, fontFamily: 'inherit', transition: 'all 0.15s',
+                whiteSpace: 'nowrap',
+              }}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Summary tab */}
         {tab === 'summary' && (
@@ -288,12 +330,123 @@ export default function MeetingDetailScreen() {
             <MeetingChat meetingId={meetingId} accessToken={accessToken} hasSummary={!!summary} />
           </div>
         )}
+
+        {/* Notes tab */}
+        {tab === 'notes' && (
+          <div style={{ animation: 'tabIn 0.2s ease', paddingBottom: 80, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {!(meeting.notes?.length) && (
+              <div style={{
+                padding: '60px 24px', textAlign: 'center',
+                border: '1px dashed rgba(255,255,255,0.07)', borderRadius: 18,
+              }}>
+                <p style={{ fontSize: 14, fontWeight: 700, color: 'rgba(255,255,255,0.22)', margin: 0 }}>
+                  Không có ghi chú nào trong cuộc họp này
+                </p>
+              </div>
+            )}
+            {(meeting.notes || []).map(note => (
+              <div key={note.id} style={{
+                background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.12)',
+                borderRadius: 18, padding: '24px 28px',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>{note.title}</span>
+                </div>
+                {note.plain_html ? (
+                  <div className="ai-summary-md" style={{ lineHeight: 1.7, color: 'rgba(255,255,255,0.82)' }}
+                    dangerouslySetInnerHTML={{ __html: note.plain_html }} />
+                ) : (
+                  <pre style={{ margin: 0, fontFamily: 'inherit', fontSize: 14, lineHeight: 1.7, color: 'rgba(255,255,255,0.82)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                    {note.plain_text || <em style={{ color: 'rgba(255,255,255,0.3)', fontStyle: 'italic' }}>(trống)</em>}
+                  </pre>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Polls tab */}
+        {tab === 'polls' && (
+          <div style={{ animation: 'tabIn 0.2s ease', paddingBottom: 80, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {!(meeting.polls?.length) && (
+              <div style={{
+                padding: '60px 24px', textAlign: 'center',
+                border: '1px dashed rgba(255,255,255,0.07)', borderRadius: 18,
+              }}>
+                <p style={{ fontSize: 14, fontWeight: 700, color: 'rgba(255,255,255,0.22)', margin: 0 }}>
+                  Không có bình chọn nào trong cuộc họp này
+                </p>
+              </div>
+            )}
+            {(meeting.polls || []).map(poll => {
+              const totalVotes = (poll.options || []).reduce((acc, o) => acc + (poll.tallies?.[o.id] || 0), 0)
+              const maxCount = Math.max(...(poll.options || []).map(o => poll.tallies?.[o.id] || 0))
+              return (
+                <div key={poll.id} style={{
+                  background: 'rgba(52,211,153,0.04)', border: '1px solid rgba(52,211,153,0.12)',
+                  borderRadius: 18, padding: '24px 28px',
+                }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+                    {poll.anonymous && <span style={{ padding: '2px 8px', borderRadius: 99, fontSize: 10, fontWeight: 700, color: '#A78BFA', background: 'rgba(167,139,250,0.15)' }}>Ẩn danh</span>}
+                    {poll.multi_choice && <span style={{ padding: '2px 8px', borderRadius: 99, fontSize: 10, fontWeight: 700, color: '#00C9B8', background: 'rgba(0,201,184,0.15)' }}>Chọn nhiều</span>}
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: '#fff', marginBottom: 14 }}>{poll.question}</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {[...(poll.options || [])].sort((a, b) => {
+                      const ca = poll.tallies?.[a.id] || 0
+                      const cb = poll.tallies?.[b.id] || 0
+                      return cb - ca
+                    }).map(opt => {
+                      const count = poll.tallies?.[opt.id] || 0
+                      const pct = totalVotes > 0 ? Math.round((count / totalVotes) * 100) : 0
+                      const isWinner = totalVotes > 0 && count === maxCount
+                      return (
+                        <div key={opt.id} style={{
+                          borderRadius: 10,
+                          background: isWinner ? 'rgba(52,211,153,0.08)' : 'rgba(255,255,255,0.03)',
+                          border: isWinner ? '1px solid rgba(52,211,153,0.35)' : '1px solid rgba(255,255,255,0.08)',
+                        }}>
+                          <div style={{ position: 'relative', padding: '10px 14px', overflow: 'hidden', borderRadius: 10 }}>
+                            <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${pct}%`, background: isWinner ? 'rgba(52,211,153,0.15)' : 'rgba(52,211,153,0.08)' }} />
+                            <div style={{ position: 'relative', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span style={{ color: isWinner ? '#34D399' : '#fff', fontSize: 14, fontWeight: isWinner ? 700 : 400, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                {isWinner && (
+                                  <svg width="13" height="13" viewBox="0 0 24 24" fill="#34D399" stroke="none">
+                                    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                                  </svg>
+                                )}
+                                {opt.text}
+                              </span>
+                              <span style={{ fontSize: 12, color: isWinner ? '#34D399' : 'rgba(255,255,255,0.55)', fontWeight: isWinner ? 700 : 400 }}>{count} · {pct}%</span>
+                            </div>
+                          </div>
+                          {!poll.anonymous && poll.voters?.[opt.id]?.length > 0 && (
+                            <div style={{ padding: '0 14px 10px' }}>
+                              <VoterButton voters={poll.voters[opt.id]} />
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <div style={{ marginTop: 10, fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>
+                    {totalVotes} lượt bình chọn
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       <style>{`
         @keyframes spin { to { transform: rotate(360deg) } }
         @keyframes tabIn { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: translateY(0) } }
         @keyframes msgIn { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: translateY(0) } }
+        .mobile-tabs::-webkit-scrollbar { display: none }
       `}</style>
     </div>
   )
@@ -626,3 +779,77 @@ function MetaIcon({ type }) {
   if (type === 'message') return <svg {...props}><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
   return null
 }
+
+function VoterButton({ voters }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    function handler(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const preview = voters.slice(0, 3)
+
+  return (
+    <div ref={ref} style={{ position: 'relative', display: 'inline-flex', marginTop: 8 }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 5,
+          padding: '3px 8px 3px 5px', borderRadius: 99,
+          border: `1px solid ${open ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.09)'}`,
+          background: open ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.04)',
+          cursor: 'pointer', transition: 'all 0.15s', fontFamily: 'inherit',
+        }}
+      >
+        <div style={{ display: 'flex' }}>
+          {preview.map((v, i) => (
+            <div key={v.user_id} style={{ marginLeft: i > 0 ? -5 : 0, zIndex: preview.length - i, position: 'relative' }}>
+              <UserAvatar name={v.display_name} avatarUrl={v.avatar_url} size={16} />
+            </div>
+          ))}
+        </div>
+        <span style={{ fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.5)', whiteSpace: 'nowrap' }}>
+          {voters.length} người
+        </span>
+        <svg
+          width="10" height="10" viewBox="0 0 24 24" fill="none"
+          stroke="rgba(255,255,255,0.35)" strokeWidth="2.5" strokeLinecap="round"
+          style={{ transition: 'transform 0.18s', transform: open ? 'rotate(180deg)' : 'rotate(0deg)', flexShrink: 0 }}
+        >
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 5px)', left: 0, zIndex: 40,
+          background: '#0F1220', border: '1px solid rgba(255,255,255,0.1)',
+          borderRadius: 10, padding: 5, minWidth: 170, maxWidth: 220,
+          maxHeight: 200, overflowY: 'auto',
+          boxShadow: '0 8px 28px rgba(0,0,0,0.6)',
+          animation: 'voterPopIn 0.15s cubic-bezier(0.22,1,0.36,1)',
+        }}>
+          <style>{`@keyframes voterPopIn { from { opacity:0; transform:scale(0.95) translateY(4px) } to { opacity:1; transform:scale(1) translateY(0) } }`}</style>
+          <div style={{ padding: '3px 6px 5px', fontSize: 10, fontWeight: 700, color: 'rgba(255,255,255,0.3)', letterSpacing: '0.07em', textTransform: 'uppercase' }}>
+            Đã bình chọn
+          </div>
+          {voters.map(v => (
+            <div key={v.user_id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', borderRadius: 7 }}>
+              <UserAvatar name={v.display_name} avatarUrl={v.avatar_url} size={22} />
+              <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.8)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {v.display_name || 'Người dùng'}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+

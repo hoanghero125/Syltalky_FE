@@ -60,8 +60,8 @@ export default function RegisterScreen() {
   return (
     <div style={{ width: '100vw', height: '100vh', display: 'flex', overflow: 'hidden', background: '#07090F' }}>
       {!isMobile && <AuthLeft />}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: isMobile ? '40px 24px' : '60px 64px', overflowY: 'auto' }}>
-        <form onSubmit={submit} style={{ maxWidth: 360, width: '100%', alignSelf: isMobile ? 'center' : 'auto' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: isMobile ? '40px 24px' : '60px 64px', overflowY: 'auto' }}>
+        <form onSubmit={submit} style={{ maxWidth: 360, width: '100%', marginTop: 'auto', marginBottom: 'auto', alignSelf: isMobile ? 'center' : 'auto' }}>
           <p style={{ fontSize: 12, color: '#00C9B8', fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 10 }}>
             Bắt đầu miễn phí
           </p>

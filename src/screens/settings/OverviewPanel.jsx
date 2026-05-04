@@ -41,7 +41,13 @@ export default function OverviewPanel() {
       if (avatarFile) form.append('avatar', avatarFile)
       if (avatarPreview === null && user?.avatar_url) form.append('remove_avatar', 'true')
       const updated = await api.patchForm('/users/me', form, accessToken)
-      setUser(updated)
+      const bust = updated.avatar_url
+        ? `${updated.avatar_url}${updated.avatar_url.includes('?') ? '&' : '?'}_v=${Date.now()}`
+        : updated.avatar_url
+      setUser(avatarFile && avatarPreview
+        ? { ...updated, avatar_url: bust, _avatarBlob: avatarPreview }
+        : { ...updated, avatar_url: bust }
+      )
       setSuccess(true)
       setTimeout(() => setSuccess(false), 2500)
     } catch (err) {

@@ -20,8 +20,8 @@ export default function DeviceCheckScreen() {
   const [mics, setMics]             = useState([])
   const [selectedCam, setSelectedCam] = useState('')
   const [selectedMic, setSelectedMic] = useState('')
-  const [camOn, setCamOn]           = useState(true)
-  const [micOn, setMicOn]           = useState(true)
+  const [camOn, setCamOn]           = useState(() => localStorage.getItem('join_cam_on') !== 'false')
+  const [micOn, setMicOn]           = useState(() => localStorage.getItem('join_mic_on') !== 'false')
   const [micLevel, setMicLevel]     = useState(0)
   const [permError,   setPermError]  = useState('')
   const [joinError,   setJoinError]  = useState('')
@@ -32,7 +32,7 @@ export default function DeviceCheckScreen() {
   const [waiting,     setWaiting]    = useState(false) // in waiting room
   const [waitingDenied, setWaitingDenied] = useState(false)
   const waitingWsRef = useRef(null)
-  const waitingStateRef = useRef({ camOn: true, micOn: true, selectedCam: '', selectedMic: '' })
+  const waitingStateRef = useRef({ camOn: localStorage.getItem('join_cam_on') !== 'false', micOn: localStorage.getItem('join_mic_on') !== 'false', selectedCam: '', selectedMic: '' })
 
   const enumerateDevices = useCallback(async () => {
     try {
@@ -49,17 +49,22 @@ export default function DeviceCheckScreen() {
     }
     if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current)
 
+    // Always acquire both tracks — then disable the ones that should start off.
+    // Requesting { video: false, audio: false } throws, and toggling later needs
+    // real tracks to flip .enabled on.
     const constraints = {
-      video: video ? (camId ? { deviceId: { exact: camId } } : true) : false,
-      audio: audio ? (micId ? { deviceId: { exact: micId } } : true) : false,
+      video: camId ? { deviceId: { exact: camId } } : true,
+      audio: micId ? { deviceId: { exact: micId } } : true,
     }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia(constraints)
+      stream.getVideoTracks().forEach(t => { t.enabled = video })
+      stream.getAudioTracks().forEach(t => { t.enabled = audio })
       streamRef.current = stream
       if (videoRef.current) videoRef.current.srcObject = stream
 
-      if (audio && stream.getAudioTracks().length > 0) {
+      if (stream.getAudioTracks().length > 0) {
         const ctx = new (window.AudioContext || window.webkitAudioContext)()
         const source = ctx.createMediaStreamSource(stream)
         const analyser = ctx.createAnalyser()
@@ -505,7 +510,7 @@ export default function DeviceCheckScreen() {
             gap: 12, marginTop: 20,
           }}>
             <MediaBtn on={camOn} onClick={toggleCam} offColor="#FF5555">
-              <CamIcon on={camOn} size={18} />
+              <CamIcon on={camOn} size={22} />
             </MediaBtn>
             <MediaBtn on={micOn} onClick={toggleMic} offColor="#FF5555">
               <MicIcon on={micOn} size={18} />
@@ -743,14 +748,21 @@ function MicIcon({ on, size = 20 }) {
   )
 }
 function CamIcon({ on, size = 20 }) {
-  return on ? (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-      <polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/>
+  if (!on) return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <mask id="camOffMaskDC">
+          <rect width="24" height="24" fill="white"/>
+          <line x1="3" y1="3" x2="21" y2="21" stroke="black" strokeWidth="3.5" strokeLinecap="round"/>
+        </mask>
+      </defs>
+      <path d="M21.5 6.1c-.3-.2-.7-.2-1 0l-4.4 3V7c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2v-2.1l4.4 3c.2.1.4.2.6.2.2 0 .3 0 .5-.1.3-.2.5-.5.5-.9V7c0-.4-.2-.7-.5-.9zM14 17H4V7h10v10zm6-1.9l-4-2.7v-.9l4-2.7v6.3z" fill="currentColor" mask="url(#camOffMaskDC)"/>
+      <line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
     </svg>
-  ) : (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-      <line x1="1" y1="1" x2="23" y2="23"/>
-      <path d="M21 21H3a2 2 0 01-2-2V8m3-3h7l2 3h4a2 2 0 012 2v9.34M16 16l7 4V7"/>
+  )
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+      <path d="M21.5 6.1c-.3-.2-.7-.2-1 0l-4.4 3V7c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2v-2.1l4.4 3c.2.1.4.2.6.2.2 0 .3 0 .5-.1.3-.2.5-.5.5-.9V7c0-.4-.2-.7-.5-.9zM14 17H4V7h10v10zm6-1.9l-4-2.7v-.9l4-2.7v6.3z"/>
     </svg>
   )
 }

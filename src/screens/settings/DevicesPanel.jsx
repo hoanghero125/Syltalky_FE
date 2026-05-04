@@ -11,6 +11,20 @@ export default function DevicesPanel() {
   const [camStream, setCamStream] = useState(null)
   const videoRef = useRef()
 
+  const [joinCamOn, setJoinCamOn] = useState(() => localStorage.getItem('join_cam_on') !== 'false')
+  const [joinMicOn, setJoinMicOn] = useState(() => localStorage.getItem('join_mic_on') !== 'false')
+
+  function toggleJoinCam() {
+    const next = !joinCamOn
+    setJoinCamOn(next)
+    localStorage.setItem('join_cam_on', String(next))
+  }
+  function toggleJoinMic() {
+    const next = !joinMicOn
+    setJoinMicOn(next)
+    localStorage.setItem('join_mic_on', String(next))
+  }
+
   const loadDevices = async (requestPerm = false) => {
     setLoading(true)
     try {
@@ -155,6 +169,13 @@ export default function DevicesPanel() {
           icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 7a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h10z"/><path d="M23 7l-6 4 6 4V7z"/></svg>}
           empty="Không tìm thấy camera"
         />
+
+        <ToggleRow
+          label="Bật camera khi vào phòng"
+          desc="Camera sẽ tự động bật khi bạn tham gia cuộc họp"
+          value={joinCamOn}
+          onToggle={toggleJoinCam}
+        />
       </Section>
 
       <Section title="Micro" desc="Thiết bị thu âm giọng nói của bạn">
@@ -165,6 +186,13 @@ export default function DevicesPanel() {
           onChange={v => setSel(s => ({ ...s, audioIn: v }))}
           icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10a7 7 0 0 1-14 0"/><line x1="12" y1="19" x2="12" y2="22"/></svg>}
           empty="Không tìm thấy micro"
+        />
+
+        <ToggleRow
+          label="Bật micro khi vào phòng"
+          desc="Micro sẽ tự động bật khi bạn tham gia cuộc họp"
+          value={joinMicOn}
+          onToggle={toggleJoinMic}
         />
       </Section>
 
@@ -182,6 +210,37 @@ export default function DevicesPanel() {
       <p style={{ margin: 0, fontSize: 12, color: 'rgba(255,255,255,0.2)', lineHeight: 1.6 }}>
         Cài đặt thiết bị được áp dụng cho cuộc họp tiếp theo. Thay đổi trong cuộc họp sẽ áp dụng ngay lập tức.
       </p>
+    </div>
+  )
+}
+
+function ToggleRow({ label, desc, value, onToggle }) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      padding: '10px 14px', borderRadius: 9,
+      background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)',
+    }}>
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.75)' }}>{label}</div>
+        {desc && <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>{desc}</div>}
+      </div>
+      <button
+        onClick={onToggle}
+        style={{
+          width: 44, height: 24, borderRadius: 12, border: 'none',
+          background: value ? '#00C9B8' : 'rgba(255,255,255,0.12)',
+          cursor: 'pointer', position: 'relative', transition: 'background 0.2s', flexShrink: 0,
+        }}
+      >
+        <div style={{
+          position: 'absolute', top: 2,
+          left: value ? 22 : 2,
+          width: 20, height: 20, borderRadius: '50%',
+          background: '#fff', transition: 'left 0.2s',
+          boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+        }} />
+      </button>
     </div>
   )
 }

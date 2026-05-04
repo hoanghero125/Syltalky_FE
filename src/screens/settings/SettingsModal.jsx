@@ -54,7 +54,7 @@ export default function SettingsModal({ onClose }) {
       onClick={onClose}
       style={{
         position: 'fixed', inset: 0, zIndex: 500,
-        background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(8px)',
+        background: 'rgba(6,8,18,0.82)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         fontFamily: '"Be Vietnam Pro", sans-serif',
       }}

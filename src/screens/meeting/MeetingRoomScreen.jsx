@@ -10,11 +10,17 @@ import {
   useParticipants,
   VideoTrack,
 } from '@livekit/components-react'
-import { Track, RoomEvent, DisconnectReason, DataPacket_Kind, LocalAudioTrack } from 'livekit-client'
+import { Track, RoomEvent, DisconnectReason, DataPacket_Kind, LocalAudioTrack, ConnectionState, setLogLevel } from 'livekit-client'
+
+setLogLevel('error')
 import useStore from '../../store'
 import { meetingsApi } from '../../api/meetings'
 import UserAvatar from '../../components/UserAvatar'
 import SettingsModal from '../settings/SettingsModal'
+import useMeetingExtras from './useMeetingExtras'
+import PinnedStrip from './panels/PinnedStrip'
+import PollsPanel from './panels/PollsPanel'
+import NotesPanel from './panels/NotesPanel'
 
 /* ── Layout helpers ─────────────────────────────────────────────────────── */
 const GAP = 8
@@ -92,18 +98,21 @@ export default function MeetingRoomScreen() {
 }
 
 /* ── RoomInner ──────────────────────────────────────────────────────────── */
-function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser, initialWaitingRoom = true, onRoomEnded }) {
+function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser: localUserProp, initialWaitingRoom = true, onRoomEnded }) {
   const navigate   = useNavigate()
   const { localParticipant } = useLocalParticipant()
   const participants = useParticipants()
   const room       = useRoomContext()
-  const { subtitleSize, subtitleFont } = useStore()
+  const { subtitleSize, subtitleFont, user: localUserFromStore } = useStore()
+  // Prefer store-subscribed user so name changes inside settings modal trigger effects immediately
+  const localUser = localUserFromStore ?? localUserProp
 
   const { isMobile } = useBreakpoint()
   const [moreOpen,        setMoreOpen]         = useState(false)
   const [panel,           setPanel]           = useState(null)
   const [mobilePanelClosing, setMobilePanelClosing] = useState(false)
   const [panelWidth,      setPanelWidth]       = useState(460)
+  const [panelResizing,   setPanelResizing]    = useState(false)
   const [elapsed,         setElapsed]          = useState(0)
   const [captionsVisible, setCaptionsVisible]  = useState(false)
   const [captions,        setCaptions]         = useState([]) // [{id, speaker_id, speaker_name, text, timestamp_ms}]
@@ -111,8 +120,55 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
   const [replayLog,    setReplayLog]    = useState([]) // entries added when "Phát lại" is clicked — shown in Nội dung only
   const [chatMessages, setChatMessages] = useState([]) // [{id, sender_id, sender_name, text, timestamp_ms}]
   const [chatUnread,   setChatUnread]   = useState(0)
-  const panelRef = useRef(null)
-  useEffect(() => { panelRef.current = panel }, [panel])
+  const [raisedHands,  setRaisedHands]  = useState({}) // { userId: true }
+  const [handRaised,   setHandRaised]   = useState(false)
+  const [handToasts,   setHandToasts]   = useState([]) // [{id, name, raised}]
+  const [coHosts,      setCoHosts]      = useState([]) // array of user IDs
+  const panelRef   = useRef(null)
+  const hostIdRef  = useRef(hostId)
+  useEffect(() => { panelRef.current  = panel   }, [panel])
+  useEffect(() => { hostIdRef.current = hostId  }, [hostId])
+
+  const isCoHost = coHosts.includes(localUser?.id)
+  const isHostOrCohost = isHost || isCoHost
+
+  const [userInfoMap, setUserInfoMap] = useState({})
+
+  // Pinned messages, polls, shared notes (REST + DataChannel)
+  const extras = useMeetingExtras({
+    room,
+    meetingId,
+    accessToken,
+    isHostOrCohost,
+    currentUserId: localUser?.id,
+    userInfoMap,
+  })
+
+  // Sync co-host list to backend (server-side authoritative for host-only endpoints)
+  // Only the host writes; co-hosts already have their list from metadata.
+  useEffect(() => {
+    if (!isHost || !meetingId || !accessToken) return
+    meetingsApi.setCoHosts(meetingId, coHosts, accessToken).catch(() => {})
+  }, [isHost, meetingId, accessToken, coHosts.join(',')])
+
+  // Track room connection state — broadcasts before fully connected fail with "PC manager is closed" / metadata timeout
+  const [roomConnected, setRoomConnected] = useState(room.state === ConnectionState.Connected)
+  useEffect(() => {
+    function onStateChanged(state) { setRoomConnected(state === ConnectionState.Connected) }
+    room.on(RoomEvent.ConnectionStateChanged, onStateChanged)
+    setRoomConnected(room.state === ConnectionState.Connected)
+    return () => room.off(RoomEvent.ConnectionStateChanged, onStateChanged)
+  }, [room])
+
+  const toggleCoHost = useCallback((userId) => {
+    setCoHosts(prev => {
+      const next = prev.includes(userId) ? prev.filter(id => id !== userId) : [...prev, userId]
+      coHostsRef.current = next
+      const msg = { type: 'co_host_update', co_hosts: next }
+      localParticipant?.publishData(new TextEncoder().encode(JSON.stringify(msg)), { reliable: true }).catch(() => {})
+      return next
+    })
+  }, [localParticipant])
 
   const captionsWsRef       = useRef(null)
   const audioCtxRef         = useRef(null)
@@ -120,10 +176,11 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
   const micStreamRef        = useRef(null)
   const localParticipantRef = useRef(localParticipant)
   useEffect(() => { localParticipantRef.current = localParticipant }, [localParticipant])
-  const isEndingRef = useRef(false)
+  const isEndingRef    = useRef(false)
+  const handRaisedRef  = useRef(false)
+  const coHostsRef     = useRef([])
   const [ending,     setEnding]     = useState(false)
   const [leaving,    setLeaving]    = useState(false)
-  const [userInfoMap, setUserInfoMap] = useState({})
   const [wasKicked,      setWasKicked]      = useState(false)
   const [hasLeft,        setHasLeft]        = useState(false)
   const [dupSession,     setDupSession]     = useState(false)
@@ -136,22 +193,36 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
   const screenShare        = localParticipant?.isScreenShareEnabled ?? false
   const someoneElseSharing = participants.some(p => !p.isLocal && p.isScreenShareEnabled)
 
-  // Publish display_name + avatar URL to all participants via LiveKit metadata
+  // Publish display_name + avatar URL + hand state (+ co_hosts if host) via LiveKit metadata
   useEffect(() => {
-    if (!localParticipant) return
+    if (!localParticipant || !roomConnected) return
     const metadata = JSON.stringify({
       display_name: localUser?.display_name || '',
       avatar_url: localUser?.avatar_url || '',
+      hand_raised: handRaised,
+      ...(isHost ? { co_hosts: coHosts } : {}),
     })
     localParticipant.setMetadata(metadata).catch(() => {})
-  }, [localParticipant, localUser?.display_name, localUser?.avatar_url])
+    if (localUser?.display_name) localParticipant.setName(localUser.display_name).catch(() => {})
+  }, [localParticipant, roomConnected, localUser?.display_name, localUser?.avatar_url, handRaised, isHost, coHosts.join(',')])
 
-  // Listen for remote participant metadata changes (name / avatar updates)
+  // Broadcast name + avatar change via DataChannel so all current participants update immediately
   useEffect(() => {
-    function onMetadataChanged(participant) {
+    if (!localParticipant || !roomConnected || !localUser?.display_name) return
+    const msg = {
+      type: 'name_update',
+      identity: localParticipant.identity,
+      display_name: localUser.display_name,
+      avatar_url: localUser?.avatar_url || '',
+    }
+    localParticipant.publishData(new TextEncoder().encode(JSON.stringify(msg)), { reliable: true }).catch(() => {})
+  }, [localParticipant, roomConnected, localUser?.display_name, localUser?.avatar_url])
+
+  // Listen for remote participant metadata changes (name / avatar / hand / co_hosts updates)
+  useEffect(() => {
+    function onMetadataChanged(_metadata, participant) {
       if (participant.isLocal) return
       const meta = parseMetadata(participant.metadata)
-      if (!meta.display_name && meta.avatar_url === undefined) return
       setUserInfoMap(prev => ({
         ...prev,
         [participant.identity]: {
@@ -160,10 +231,72 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
           ...(meta.avatar_url !== undefined ? { avatar_url: meta.avatar_url } : {}),
         },
       }))
+      if (meta.hand_raised !== undefined) {
+        setRaisedHands(prev => {
+          if (meta.hand_raised) return { ...prev, [participant.identity]: true }
+          if (prev[participant.identity]) { const n = { ...prev }; delete n[participant.identity]; return n }
+          return prev
+        })
+      }
+      // Sync co-hosts when host updates their metadata
+      if (participant.identity === hostIdRef.current && Array.isArray(meta.co_hosts)) {
+        coHostsRef.current = meta.co_hosts
+        setCoHosts(meta.co_hosts)
+      }
     }
     room.on(RoomEvent.ParticipantMetadataChanged, onMetadataChanged)
     return () => room.off(RoomEvent.ParticipantMetadataChanged, onMetadataChanged)
   }, [room])
+
+  // Keep userInfoMap in sync when LiveKit propagates setName() to other clients
+  useEffect(() => {
+    function onNameChanged(name, participant) {
+      if (participant.isLocal) return
+      setUserInfoMap(prev => ({
+        ...prev,
+        [participant.identity]: { ...prev[participant.identity], display_name: name },
+      }))
+    }
+    room.on(RoomEvent.ParticipantNameChanged, onNameChanged)
+    return () => room.off(RoomEvent.ParticipantNameChanged, onNameChanged)
+  }, [room])
+
+  // Seed co-hosts from host's metadata on join (late joiner fix)
+  useEffect(() => {
+    const hostParticipant = room.remoteParticipants.get(hostId)
+    if (!hostParticipant) return
+    const meta = parseMetadata(hostParticipant.metadata)
+    if (Array.isArray(meta.co_hosts)) setCoHosts(meta.co_hosts)
+  }, [room, hostId])
+
+  // When a new participant joins, re-broadcast hand state and (if host) co-host list
+  useEffect(() => {
+    if (!localParticipant) return
+    function onParticipantConnected(participant) {
+      // Re-send our raised hand to the new joiner
+      if (handRaisedRef.current) {
+        const msg = { type: 'raise_hand', user_id: localUser?.id || '', user_name: localUser?.display_name || '', raised: true }
+        localParticipant.publishData(new TextEncoder().encode(JSON.stringify(msg)), { reliable: true, destinationIdentities: [participant.identity] }).catch(() => {})
+      }
+      // Host re-sends co-host list so rejoining co-hosts recover their role
+      if (isHost && coHostsRef.current.length > 0) {
+        const msg = { type: 'co_host_update', co_hosts: coHostsRef.current }
+        localParticipant.publishData(new TextEncoder().encode(JSON.stringify(msg)), { reliable: true, destinationIdentities: [participant.identity] }).catch(() => {})
+      }
+      // Send our current display name + avatar so late joiners see the latest info
+      if (localUser?.display_name) {
+        const msg = {
+          type: 'name_update',
+          identity: localParticipant.identity,
+          display_name: localUser.display_name,
+          avatar_url: localUser?.avatar_url || '',
+        }
+        localParticipant.publishData(new TextEncoder().encode(JSON.stringify(msg)), { reliable: true, destinationIdentities: [participant.identity] }).catch(() => {})
+      }
+    }
+    room.on(RoomEvent.ParticipantConnected, onParticipantConnected)
+    return () => room.off(RoomEvent.ParticipantConnected, onParticipantConnected)
+  }, [room, localParticipant, localUser, isHost])
 
   useEffect(() => {
     const iv = setInterval(() => setElapsed(s => s + 1), 1000)
@@ -191,12 +324,33 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
 
   // Chat via LiveKit DataChannel
   useEffect(() => {
-    function onData(payload) {
+    function onData(payload, sender) {
       try {
         const msg = JSON.parse(new TextDecoder().decode(payload))
         if (msg.type === 'chat') {
           setChatMessages(prev => [...prev.slice(-199), { id: Date.now() + Math.random(), ...msg }])
           if (panelRef.current !== 'chat') setChatUnread(n => n + 1)
+        } else if (msg.type === 'raise_hand') {
+          setRaisedHands(prev => {
+            if (msg.raised) return { ...prev, [msg.user_id]: true }
+            const next = { ...prev }; delete next[msg.user_id]; return next
+          })
+          const toastId = Date.now() + Math.random()
+          setHandToasts(prev => [...prev.slice(-2), { id: toastId, name: msg.user_name, raised: msg.raised }])
+          setTimeout(() => setHandToasts(prev => prev.filter(t => t.id !== toastId)), 3500)
+        } else if (msg.type === 'co_host_update' && Array.isArray(msg.co_hosts)) {
+          coHostsRef.current = msg.co_hosts
+          setCoHosts(msg.co_hosts)
+        } else if (msg.type === 'name_update' && msg.display_name) {
+          const identity = msg.identity || sender?.identity
+          if (identity) setUserInfoMap(prev => ({
+            ...prev,
+            [identity]: {
+              ...prev[identity],
+              display_name: msg.display_name,
+              ...(msg.avatar_url !== undefined ? { avatar_url: msg.avatar_url } : {}),
+            },
+          }))
         }
       } catch {}
     }
@@ -218,6 +372,20 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
     const encoded = new TextEncoder().encode(JSON.stringify(msg))
     localParticipant?.publishData(encoded, { reliable: true }).catch(() => {})
   }, [localParticipant, localUser])
+
+  const toggleRaiseHand = useCallback(() => {
+    const next = !handRaised
+    setHandRaised(next)
+    handRaisedRef.current = next
+    if (next) {
+      setRaisedHands(prev => ({ ...prev, [localUser?.id]: true }))
+    } else {
+      setRaisedHands(prev => { const n = { ...prev }; delete n[localUser?.id]; return n })
+    }
+    const msg = { type: 'raise_hand', user_id: localUser?.id || '', user_name: localUser?.display_name || 'Bạn', raised: next }
+    const encoded = new TextEncoder().encode(JSON.stringify(msg))
+    localParticipant?.publishData(encoded, { reliable: true }).catch(() => {})
+  }, [handRaised, localParticipant, localUser])
 
   // Captions WebSocket — always connected in a meeting to receive TTS from others
   useEffect(() => {
@@ -279,7 +447,16 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
   }, [meetingId, accessToken])
 
 
-  // Fetch avatar + name for all participants from BE
+  // Seed userInfoMap with the local user so self-votes show the correct avatar
+  useEffect(() => {
+    if (!localUser?.id) return
+    setUserInfoMap(prev => ({
+      ...prev,
+      [localUser.id]: { ...prev[localUser.id], display_name: localUser.display_name, avatar_url: localUser.avatar_url },
+    }))
+  }, [localUser?.id, localUser?.avatar_url, localUser?.display_name])
+
+  // Fetch avatar + name for all remote participants from BE
   useEffect(() => {
     const remoteIds = participants
       .filter(p => !p.isLocal)
@@ -292,9 +469,11 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
       .then(r => r.json())
       .then(data => {
         if (!Array.isArray(data)) return
-        const map = {}
-        data.forEach(u => { map[u.id] = u })
-        setUserInfoMap(map)
+        setUserInfoMap(prev => {
+          const next = { ...prev }
+          data.forEach(u => { next[u.id] = { ...next[u.id], ...u } })
+          return next
+        })
       })
       .catch(() => {})
   }, [participants.map(p => p.identity).join(','), accessToken])
@@ -308,10 +487,14 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
 
   const handleLeave = useCallback(async () => {
     setLeaving(true)
+    if (handRaised) {
+      const msg = { type: 'raise_hand', user_id: localUser?.id || '', user_name: localUser?.display_name || '', raised: false }
+      try { localParticipant?.publishData(new TextEncoder().encode(JSON.stringify(msg)), { reliable: true }) } catch {}
+    }
     await room.disconnect()
     setHasLeft(true)
     setLeaving(false)
-  }, [room])
+  }, [room, handRaised, localUser, localParticipant])
 
   const handleEnd = useCallback(async () => {
     setEnding(true)
@@ -345,7 +528,7 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
 
         {/* Video area — shrinks when panel opens */}
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden', background: '#060810', minWidth: 0 }}>
-          <MeetGrid localUser={localUser} userInfoMap={userInfoMap} />
+          <MeetGrid localUser={localUser} userInfoMap={userInfoMap} raisedHands={raisedHands} />
           {captionsVisible && captions.length > 0 && (
             <SubtitleOverlay captions={captions} localUserId={localUser?.id} subtitleSize={subtitleSize} subtitleFont={subtitleFont} userInfoMap={userInfoMap} />
           )}
@@ -359,6 +542,7 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
           background: '#0A0D18',
           borderLeft: (!isMobile && panel) ? '1px solid rgba(255,255,255,0.07)' : 'none',
           display: 'flex', flexDirection: 'column',
+          transition: panelResizing ? 'none' : 'width 0.25s cubic-bezier(0.22,1,0.36,1)',
         }}>
           <div
             onMouseMove={e => {
@@ -371,11 +555,14 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
               e.currentTarget.style.boxShadow = 'none'
             }}
             onMouseDown={e => {
-              if (e.clientX - e.currentTarget.getBoundingClientRect().left > 10) return
+              const dx = e.clientX - e.currentTarget.getBoundingClientRect().left
+              if (dx < 0 || dx > 10) return
               e.preventDefault()
+              setPanelResizing(true)
               const startX = e.clientX
               const startW = panelWidth
               const cleanup = () => {
+                setPanelResizing(false)
                 document.removeEventListener('mousemove', onMove)
                 document.removeEventListener('mouseup', cleanup)
               }
@@ -393,7 +580,7 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
               padding: '0 18px', borderBottom: '1px solid rgba(255,255,255,0.06)',
             }}>
               <span style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>
-                {{ participants: 'Người tham gia', chat: 'Chat', noidung: 'Nội dung cuộc họp', tts: 'Text-to-speech' }[panel] ?? ''}
+                {{ participants: 'Người tham gia', chat: 'Chat', noidung: 'Nội dung cuộc họp', tts: 'Text-to-speech', polls: 'Bình chọn', notes: 'Ghi chú chung' }[panel] ?? ''}
               </span>
               <button onClick={() => setPanel(null)} style={{
                 width: 28, height: 28, borderRadius: 7, border: 'none',
@@ -409,11 +596,13 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
                 </svg>
               </button>
             </div>
-            <div style={{ flex: 1, overflowY: panel === 'noidung' ? 'hidden' : 'auto', padding: '14px 16px', display: 'flex', flexDirection: 'column' }}>
-              {panel === 'participants' && <ParticipantsPanel participants={participants} userInfoMap={userInfoMap} localUser={localUser} hostId={hostId} isHost={isHost} meetingId={meetingId} accessToken={accessToken} waitingRequests={waitingRequests} onApprove={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} onDeny={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} waitingRoomEnabled={waitingRoomEnabled} onToggleWaitingRoom={async (v) => { setWaitingRoomEnabled(v); try { await meetingsApi.toggleWaitingRoom(meetingId, v, accessToken) } catch { setWaitingRoomEnabled(!v) } }} />}
+            <div style={{ flex: 1, overflowY: panel === 'noidung' ? 'hidden' : 'auto', padding: (panel === 'polls' || panel === 'notes') ? 0 : '14px 16px', display: 'flex', flexDirection: 'column' }}>
+              {panel === 'participants' && <ParticipantsPanel participants={participants} userInfoMap={userInfoMap} localUser={localUser} hostId={hostId} isHost={isHost} isCoHost={isCoHost} coHosts={coHosts} onToggleCoHost={toggleCoHost} meetingId={meetingId} accessToken={accessToken} waitingRequests={waitingRequests} raisedHands={raisedHands} onApprove={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} onDeny={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} waitingRoomEnabled={waitingRoomEnabled} onToggleWaitingRoom={async (v) => { setWaitingRoomEnabled(v); try { await meetingsApi.toggleWaitingRoom(meetingId, v, accessToken) } catch { setWaitingRoomEnabled(!v) } }} />}
               {panel === 'noidung'     && <MeetingContentPanel captions={captions} ttsMessages={ttsMessages} replayLog={replayLog} userInfoMap={userInfoMap} localUser={localUser} meetingId={meetingId} accessToken={accessToken} />}
               {panel === 'tts'         && <TtsPanel meetingId={meetingId} accessToken={accessToken} ttsMessages={ttsMessages} captionsWsRef={captionsWsRef} localParticipant={localParticipant} micEnabled={micEnabled} localUserId={localUser?.id} onReplay={msg => setReplayLog(prev => [...prev.slice(-99), { ...msg, id: Date.now() + Math.random(), timestamp_ms: Date.now(), isReplay: true }])} />}
-              {panel === 'chat'        && <ChatPanel messages={chatMessages} onSend={sendChat} localUserId={localUser?.id} userInfoMap={userInfoMap} localUser={localUser} />}
+              {panel === 'chat'        && <ChatPanel messages={chatMessages} onSend={sendChat} localUserId={localUser?.id} userInfoMap={userInfoMap} localUser={localUser} pins={extras.pins} isHostOrCohost={isHostOrCohost} onPin={extras.actions.pinMessage} onUnpin={extras.actions.unpinMessage} />}
+              {panel === 'polls'       && <PollsPanel polls={extras.polls} isHostOrCohost={isHostOrCohost} currentUserId={localUser?.id} currentUser={localUser} userInfoMap={userInfoMap} onCreate={extras.actions.createPoll} onVote={extras.actions.votePoll} onClose={extras.actions.closePoll} onDelete={extras.actions.deletePoll} />}
+              {panel === 'notes'       && <NotesPanel notes={extras.notes} isHostOrCohost={isHostOrCohost} meetingId={meetingId} accessToken={accessToken} currentUser={localUser} onCreate={extras.actions.createNote} onRename={extras.actions.renameNote} onDelete={extras.actions.deleteNote} />}
             </div>
           </div>
         </div>
@@ -425,17 +614,19 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
           <div style={{ position: 'fixed', inset: 0, zIndex: 200, background: '#0A0D18', display: 'flex', flexDirection: 'column', animation: `${mobilePanelClosing ? 'panelSlideOut' : 'panelSlideIn'} 0.22s cubic-bezier(0.22,1,0.36,1) both` }}>
             <div style={{ height: 52, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 18px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
               <span style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>
-                {{ participants: 'Người tham gia', chat: 'Chat', noidung: 'Nội dung cuộc họp', tts: 'Text-to-speech' }[panel] ?? ''}
+                {{ participants: 'Người tham gia', chat: 'Chat', noidung: 'Nội dung cuộc họp', tts: 'Text-to-speech', polls: 'Bình chọn', notes: 'Ghi chú chung' }[panel] ?? ''}
               </span>
               <button onClick={closeMobilePanel} style={{ width: 28, height: 28, borderRadius: 7, border: 'none', background: 'rgba(255,255,255,0.06)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,255,255,0.5)' }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </div>
-            <div style={{ flex: 1, overflowY: panel === 'noidung' ? 'hidden' : 'auto', padding: '14px 16px', display: 'flex', flexDirection: 'column' }}>
-              {panel === 'participants' && <ParticipantsPanel participants={participants} userInfoMap={userInfoMap} localUser={localUser} hostId={hostId} isHost={isHost} meetingId={meetingId} accessToken={accessToken} waitingRequests={waitingRequests} onApprove={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} onDeny={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} waitingRoomEnabled={waitingRoomEnabled} onToggleWaitingRoom={async (v) => { setWaitingRoomEnabled(v); try { await meetingsApi.toggleWaitingRoom(meetingId, v, accessToken) } catch { setWaitingRoomEnabled(!v) } }} />}
+            <div style={{ flex: 1, overflowY: panel === 'noidung' ? 'hidden' : 'auto', padding: (panel === 'polls' || panel === 'notes') ? 0 : '14px 16px', display: 'flex', flexDirection: 'column' }}>
+              {panel === 'participants' && <ParticipantsPanel participants={participants} userInfoMap={userInfoMap} localUser={localUser} hostId={hostId} isHost={isHost} isCoHost={isCoHost} coHosts={coHosts} onToggleCoHost={toggleCoHost} meetingId={meetingId} accessToken={accessToken} waitingRequests={waitingRequests} raisedHands={raisedHands} onApprove={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} onDeny={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} waitingRoomEnabled={waitingRoomEnabled} onToggleWaitingRoom={async (v) => { setWaitingRoomEnabled(v); try { await meetingsApi.toggleWaitingRoom(meetingId, v, accessToken) } catch { setWaitingRoomEnabled(!v) } }} />}
               {panel === 'noidung'     && <MeetingContentPanel captions={captions} ttsMessages={ttsMessages} replayLog={replayLog} userInfoMap={userInfoMap} localUser={localUser} meetingId={meetingId} accessToken={accessToken} />}
               {panel === 'tts'         && <TtsPanel meetingId={meetingId} accessToken={accessToken} ttsMessages={ttsMessages} captionsWsRef={captionsWsRef} localParticipant={localParticipant} micEnabled={micEnabled} localUserId={localUser?.id} onReplay={msg => setReplayLog(prev => [...prev.slice(-99), { ...msg, id: Date.now() + Math.random(), timestamp_ms: Date.now(), isReplay: true }])} />}
-              {panel === 'chat'        && <ChatPanel messages={chatMessages} onSend={sendChat} localUserId={localUser?.id} userInfoMap={userInfoMap} localUser={localUser} />}
+              {panel === 'chat'        && <ChatPanel messages={chatMessages} onSend={sendChat} localUserId={localUser?.id} userInfoMap={userInfoMap} localUser={localUser} pins={extras.pins} isHostOrCohost={isHostOrCohost} onPin={extras.actions.pinMessage} onUnpin={extras.actions.unpinMessage} />}
+              {panel === 'polls'       && <PollsPanel polls={extras.polls} isHostOrCohost={isHostOrCohost} currentUserId={localUser?.id} currentUser={localUser} userInfoMap={userInfoMap} onCreate={extras.actions.createPoll} onVote={extras.actions.votePoll} onClose={extras.actions.closePoll} onDelete={extras.actions.deletePoll} />}
+              {panel === 'notes'       && <NotesPanel notes={extras.notes} isHostOrCohost={isHostOrCohost} meetingId={meetingId} accessToken={accessToken} currentUser={localUser} onCreate={extras.actions.createNote} onRename={extras.actions.renameNote} onDelete={extras.actions.deleteNote} />}
             </div>
           </div>
         </>
@@ -451,13 +642,13 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
             <button onClick={() => { togglePanel('participants'); setMoreOpen(false) }} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 6, border: `1px solid ${panel === 'participants' ? 'rgba(167,139,250,0.35)' : 'rgba(167,139,250,0.18)'}`, background: panel === 'participants' ? 'rgba(167,139,250,0.15)' : 'rgba(167,139,250,0.06)', cursor: 'pointer', color: '#A78BFA', position: 'relative' }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
               <span style={{ fontSize: 12, fontWeight: 700 }}>{participants.length}</span>
-              {isHost && waitingRequests.length > 0 && <div style={{ position: 'absolute', top: -5, right: -5, width: 14, height: 14, borderRadius: '50%', background: '#FF6B8A', border: '2px solid #0A0D18', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 8, fontWeight: 800, color: '#fff' }}>{waitingRequests.length}</div>}
+              {(isHost || isCoHost) && waitingRequests.length > 0 && <div style={{ position: 'absolute', top: -5, right: -5, width: 14, height: 14, borderRadius: '50%', background: '#FF6B8A', border: '2px solid #0A0D18', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 8, fontWeight: 800, color: '#fff' }}>{waitingRequests.length}</div>}
             </button>
           </div>
 
           {/* Main controls row */}
           <div style={{ height: 64, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '0 16px' }}>
-            <IconBtn on={camEnabled} onClick={toggleCam} offRed size={44}><CamIcon on={camEnabled} size={18} /></IconBtn>
+            <IconBtn on={camEnabled} onClick={toggleCam} offRed size={44}><CamIcon on={camEnabled} size={21} /></IconBtn>
             <IconBtn on={micEnabled} onClick={toggleMic} offRed size={44}><MicIcon on={micEnabled} size={18} /></IconBtn>
 
             {/* More button */}
@@ -478,10 +669,13 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
                 <div style={{ width: 36, height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.12)', margin: '0 auto 16px' }} />
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
                   {[
+                    { label: 'Giơ tay', active: handRaised, onClick: () => { toggleRaiseHand(); setMoreOpen(false) }, icon: <HandIcon on={handRaised} size={20} /> },
                     { label: 'Màn hình', active: screenShare, disabled: someoneElseSharing && !screenShare, onClick: () => { toggleScreen(); setMoreOpen(false) }, icon: <ScreenIcon on={screenShare} size={20} /> },
                     { label: 'Phụ đề', active: captionsVisible, onClick: () => { setCaptionsVisible(v => !v); setMoreOpen(false) }, icon: <CaptionIcon size={20} /> },
                     { label: 'TTS', active: panel === 'tts', disabled: !micEnabled, onClick: () => { if (micEnabled) { togglePanel('tts'); setMoreOpen(false) } }, icon: <TtsIcon size={20} /> },
                     { label: 'Chat', active: panel === 'chat', onClick: () => { togglePanel('chat'); setMoreOpen(false) }, icon: <ChatIcon size={20} />, badge: chatUnread },
+                    { label: 'Bình chọn', active: panel === 'polls', onClick: () => { togglePanel('polls'); setMoreOpen(false) }, icon: <PollsIcon size={20} /> },
+                    { label: 'Ghi chú', active: panel === 'notes', onClick: () => { togglePanel('notes'); setMoreOpen(false) }, icon: <NotesIcon size={20} /> },
                     { label: 'Nội dung', active: panel === 'noidung', onClick: () => { togglePanel('noidung'); setMoreOpen(false) }, icon: <TranscriptIcon size={20} /> },
                     { label: 'Cài đặt', active: false, onClick: () => { setSettingsOpen(true); setMoreOpen(false) }, icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg> },
                   ].map((item, i) => (
@@ -515,10 +709,13 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
 
           {/* CENTER — controls */}
           <div style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-            <IconBtn on={camEnabled}  onClick={toggleCam}    offRed><CamIcon on={camEnabled} size={20} /></IconBtn>
+            <IconBtn on={camEnabled}  onClick={toggleCam}    offRed><CamIcon on={camEnabled} size={23} /></IconBtn>
             <IconBtn on={micEnabled}  onClick={toggleMic}    offRed><MicIcon on={micEnabled} size={20} /></IconBtn>
             <IconBtn on={panel === 'tts'} onClick={() => micEnabled ? togglePanel('tts') : null} disabled={!micEnabled} title={micEnabled ? 'Text-to-speech' : 'Bật mic để dùng TTS'} offRed={!micEnabled}><TtsIcon /></IconBtn>
             <Divider />
+            <IconBtn on={handRaised} onClick={toggleRaiseHand} title="Giơ tay" style={{ color: handRaised ? '#FBBF24' : undefined }}>
+              <HandIcon on={handRaised} />
+            </IconBtn>
             <ScreenShareBtn active={screenShare} disabled={someoneElseSharing && !screenShare} onClick={toggleScreen} />
             <IconBtn on={captionsVisible} onClick={() => setCaptionsVisible(v => !v)} offRed={!captionsVisible} title="Hiện phụ đề"><CaptionIcon on={captionsVisible} /></IconBtn>
             <IconBtn on={panel === 'noidung'} onClick={() => togglePanel('noidung')} title="Nội dung cuộc họp"><TranscriptIcon /></IconBtn>
@@ -526,6 +723,8 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
               <IconBtn on={panel === 'chat'} onClick={() => togglePanel('chat')}><ChatIcon /></IconBtn>
               {chatUnread > 0 && <div style={{ position: 'absolute', top: -3, right: -3, minWidth: 15, height: 15, borderRadius: 8, background: '#EF4444', color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px', pointerEvents: 'none', letterSpacing: 0 }}>{chatUnread > 99 ? '99+' : chatUnread}</div>}
             </div>
+            <IconBtn on={panel === 'polls'} onClick={() => togglePanel('polls')} title="Bình chọn"><PollsIcon /></IconBtn>
+            <IconBtn on={panel === 'notes'} onClick={() => togglePanel('notes')} title="Ghi chú chung"><NotesIcon /></IconBtn>
             <IconBtn on={false} onClick={() => setSettingsOpen(true)} title="Cài đặt">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
             </IconBtn>
@@ -538,11 +737,32 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
             <button onClick={() => togglePanel('participants')} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 10, position: 'relative', border: `1px solid ${panel === 'participants' ? 'rgba(167,139,250,0.35)' : 'rgba(167,139,250,0.18)'}`, background: panel === 'participants' ? 'rgba(167,139,250,0.15)' : 'rgba(167,139,250,0.08)', cursor: 'pointer', color: '#A78BFA', transition: 'all 0.15s' }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
               <span style={{ fontSize: 14, fontWeight: 700, minWidth: 14, textAlign: 'center' }}>{participants.length}</span>
-              {isHost && waitingRequests.length > 0 && <div style={{ position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: '50%', background: '#FF6B8A', border: '2px solid #0A0D18', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800, color: '#fff' }}>{waitingRequests.length}</div>}
+              {(isHost || isCoHost) && waitingRequests.length > 0 && <div style={{ position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: '50%', background: '#FF6B8A', border: '2px solid #0A0D18', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800, color: '#fff' }}>{waitingRequests.length}</div>}
             </button>
             <Divider />
             <LeaveButton isHost={isHost} leaving={leaving} ending={ending} onLeave={handleLeave} onEnd={handleEnd} />
           </div>
+        </div>
+      )}
+
+      {/* Raise hand toasts */}
+      {handToasts.length > 0 && (
+        <div style={{ position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 80, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center', pointerEvents: 'none' }}>
+          {handToasts.map(t => (
+            <div key={t.id} style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '8px 16px', borderRadius: 20,
+              background: 'rgba(15,18,32,0.92)', backdropFilter: 'blur(12px)',
+              border: '1px solid rgba(251,191,36,0.3)',
+              boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+              animation: 'handToastIn 0.25s cubic-bezier(0.22,1,0.36,1)',
+              fontSize: 13, fontWeight: 600, color: '#fff',
+            }}>
+              <RaisedHandIcon size={18} />
+              <span style={{ color: '#FBBF24' }}>{t.name}</span>
+              <span style={{ color: 'rgba(255,255,255,0.55)' }}>{t.raised ? 'đã giơ tay' : 'đã hạ tay'}</span>
+            </div>
+          ))}
         </div>
       )}
 
@@ -712,6 +932,10 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
         @keyframes captionIn {
           from { opacity: 0; transform: translateY(6px); }
           to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes handToastIn {
+          from { opacity: 0; transform: translateY(-8px) scale(0.95); }
+          to   { opacity: 1; transform: translateY(0) scale(1); }
         }
       `}</style>
     </div>
@@ -937,7 +1161,8 @@ function RoomEndedOverlay({ meetingId, navigate }) {
 }
 
 /* ── Custom dynamic grid ────────────────────────────────────────────────── */
-function MeetGrid({ localUser, userInfoMap }) {
+function MeetGrid({ localUser, userInfoMap, raisedHands = {} }) {
+  const { isMobile } = useBreakpoint()
   const [page, setPage] = useState(0)
   const [visible, setVisible] = useState(true)
   const [layoutKey, setLayoutKey] = useState(0)
@@ -966,23 +1191,37 @@ function MeetGrid({ localUser, userInfoMap }) {
   /* ── Presentation layout ── */
   if (hasScreen) {
     const screenTrack = screenTracks[0]
+
+    // Mobile: full-width screen share + scrollable bottom camera strip
+    if (isMobile) {
+      return (
+        <div key={layoutKey} style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: '#060810', boxSizing: 'border-box', opacity: visible ? 1 : 0, transform: visible ? 'scale(1)' : 'scale(0.98)', transition: 'opacity 0.22s ease, transform 0.22s ease' }}>
+          <div style={{ flex: 1, minHeight: 0, padding: PAD, paddingBottom: GAP }}>
+            <ScreenShareTile track={screenTrack} />
+          </div>
+          {cameraTracks.length > 0 && (
+            <div style={{ height: 90, flexShrink: 0, display: 'flex', flexDirection: 'row', gap: GAP, overflowX: 'auto', overflowY: 'hidden', padding: `0 ${PAD}px ${PAD}px`, scrollbarWidth: 'none' }}>
+              {cameraTracks.map(track => (
+                <div key={track.participant.identity} style={{ height: '100%', aspectRatio: '16/9', flexShrink: 0 }}>
+                  <MeetTile track={track} localUser={localUser} userInfoMap={userInfoMap} avatarSize={32} raisedHands={raisedHands} />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )
+    }
+
+    // Desktop: screen share left, camera strip right
     return (
       <div key={layoutKey} style={{ width: '100%', height: '100%', display: 'flex', background: '#060810', padding: PAD, gap: GAP, boxSizing: 'border-box', opacity: visible ? 1 : 0, transform: visible ? 'scale(1)' : 'scale(0.98)', transition: 'opacity 0.22s ease, transform 0.22s ease' }}>
-
-        {/* Main: screen share */}
-        <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <ScreenShareTile track={screenTrack} />
         </div>
-
-        {/* Right strip: camera thumbnails */}
-        <div style={{
-          width: 180, flexShrink: 0,
-          display: 'flex', flexDirection: 'column', gap: GAP,
-          overflowY: 'auto',
-        }}>
+        <div style={{ width: 180, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: GAP, overflowY: 'auto' }}>
           {cameraTracks.map(track => (
             <div key={track.participant.identity} style={{ width: '100%', aspectRatio: '16/9', flexShrink: 0 }}>
-              <MeetTile track={track} localUser={localUser} userInfoMap={userInfoMap} avatarSize={48} />
+              <MeetTile track={track} localUser={localUser} userInfoMap={userInfoMap} avatarSize={48} raisedHands={raisedHands} />
             </div>
           ))}
         </div>
@@ -1029,7 +1268,7 @@ function MeetGrid({ localUser, userInfoMap }) {
                     flexShrink: 0, height: '100%',
                   }}
                 >
-                  <MeetTile track={track} localUser={localUser} userInfoMap={userInfoMap} avatarSize={avatarSize} />
+                  <MeetTile track={track} localUser={localUser} userInfoMap={userInfoMap} avatarSize={avatarSize} raisedHands={raisedHands} />
                 </div>
               ))}
             </div>
@@ -1128,7 +1367,7 @@ function ScreenShareTile({ track }) {
 }
 
 /* ── Participant tile ────────────────────────────────────────────────────── */
-function MeetTile({ track, localUser, userInfoMap, avatarSize = 120 }) {
+function MeetTile({ track, localUser, userInfoMap, avatarSize = 120, raisedHands = {} }) {
   const mirrorCamera = useStore(s => s.mirrorCamera)
   const participant = track.participant
   const isVideoOn   = !!track.publication && !track.publication.isMuted
@@ -1136,12 +1375,16 @@ function MeetTile({ track, localUser, userInfoMap, avatarSize = 120 }) {
   const isMicOn     = participant.isMicrophoneEnabled
   const isLocal     = participant.isLocal
 
-  const remoteInfo = userInfoMap?.[participant.identity] || {}
-  const avatarUrl  = isLocal ? (localUser?.avatar_url || '') : (remoteInfo.avatar_url || '')
-  const name       = isLocal
+  const remoteInfo  = userInfoMap?.[participant.identity] || {}
+  const userId      = isLocal ? localUser?.id : participant.identity
+  const avatarUrl   = isLocal
+    ? (localUser?._avatarBlob || localUser?.avatar_url || '')
+    : (remoteInfo.avatar_url || '')
+  const name        = isLocal
     ? (localUser?.display_name || participant.name || participant.identity || '?')
     : (participant.name || remoteInfo.display_name || participant.identity || '?')
-  const label      = name + (isLocal ? ' (bạn)' : '')
+  const label       = name + (isLocal ? ' (bạn)' : '')
+  const hasHand     = !!raisedHands[userId]
 
   return (
     <div style={{
@@ -1208,12 +1451,26 @@ function MeetTile({ track, localUser, userInfoMap, avatarSize = 120 }) {
           {label}
         </span>
       </div>
+
+      {/* Raised hand badge — top right */}
+      {hasHand && (
+        <div style={{
+          position: 'absolute', top: 8, right: 8,
+          width: 32, height: 32, borderRadius: 10,
+          background: 'rgba(251,191,36,0.22)', border: '1px solid rgba(251,191,36,0.45)',
+          backdropFilter: 'blur(6px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          animation: 'handToastIn 0.25s cubic-bezier(0.22,1,0.36,1)',
+        }}>
+          <RaisedHandIcon size={18} />
+        </div>
+      )}
     </div>
   )
 }
 
 /* ── Participants panel ─────────────────────────────────────────────────── */
-function ParticipantsPanel({ participants, userInfoMap, localUser, hostId, isHost, meetingId, accessToken, waitingRequests = [], onApprove, onDeny, waitingRoomEnabled = true, onToggleWaitingRoom }) {
+function ParticipantsPanel({ participants, userInfoMap, localUser, hostId, isHost, isCoHost, coHosts = [], onToggleCoHost, meetingId, accessToken, waitingRequests = [], raisedHands = {}, onApprove, onDeny, waitingRoomEnabled = true, onToggleWaitingRoom }) {
   const [query, setQuery] = useState('')
 
   async function handleApprove(req) {
@@ -1243,8 +1500,8 @@ function ParticipantsPanel({ participants, userInfoMap, localUser, hostId, isHos
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
 
-      {/* Waiting room toggle — host only */}
-      {isHost && (
+      {/* Waiting room toggle — host and co-host */}
+      {(isHost || isCoHost) && (
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '10px 14px', borderRadius: 12,
@@ -1278,8 +1535,8 @@ function ParticipantsPanel({ participants, userInfoMap, localUser, hostId, isHos
         </div>
       )}
 
-      {/* Waiting room requests — host only */}
-      {isHost && waitingRequests.length > 0 && (
+      {/* Waiting room requests — host and co-host */}
+      {(isHost || isCoHost) && waitingRequests.length > 0 && (
         <div style={{ marginBottom: 4 }}>
           <p style={{ margin: '0 0 8px', fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#FF6B8A' }}>
             Đang chờ duyệt · {waitingRequests.length}
@@ -1363,27 +1620,48 @@ function ParticipantsPanel({ participants, userInfoMap, localUser, hostId, isHos
       </p>
 
       {filtered.map(p => {
-        const remoteInfo = userInfoMap?.[p.identity] || {}
-        const avatarUrl  = p.isLocal ? (localUser?.avatar_url || '') : (remoteInfo.avatar_url || '')
-        const name       = p.isLocal
+        const remoteInfo  = userInfoMap?.[p.identity] || {}
+        const userId      = p.isLocal ? localUser?.id : p.identity
+        const avatarUrl   = p.isLocal
+          ? (localUser?._avatarBlob || localUser?.avatar_url || '')
+          : (remoteInfo.avatar_url || '')
+        const name        = p.isLocal
           ? (localUser?.display_name || p.name || p.identity || '?')
           : (p.name || remoteInfo.display_name || p.identity || '?')
+        const hasHand     = !!raisedHands[userId]
+        const isThisHost  = p.identity === hostId
+        const isThisCoHost = coHosts.includes(userId)
+        // Kick visibility: host can kick anyone (not self); co-host can kick non-host non-cohost
+        const canKick = !p.isLocal && (
+          isHost ||
+          (isCoHost && !isThisHost && !isThisCoHost)
+        )
         return (
           <div key={p.identity} style={{
             display: 'flex', alignItems: 'center', gap: 10,
             padding: '9px 12px', borderRadius: 10,
-            background: p.identity === hostId ? 'rgba(251,191,36,0.05)' : 'rgba(255,255,255,0.04)',
-            border: `1px solid ${p.identity === hostId ? 'rgba(251,191,36,0.15)' : 'rgba(255,255,255,0.05)'}`,
+            background: hasHand ? 'rgba(251,191,36,0.07)' : (isThisHost ? 'rgba(251,191,36,0.05)' : isThisCoHost ? 'rgba(0,201,184,0.04)' : 'rgba(255,255,255,0.04)'),
+            border: `1px solid ${hasHand ? 'rgba(251,191,36,0.25)' : isThisHost ? 'rgba(251,191,36,0.15)' : isThisCoHost ? 'rgba(0,201,184,0.12)' : 'rgba(255,255,255,0.05)'}`,
+            transition: 'background 0.2s, border-color 0.2s',
           }}>
             <UserAvatar name={name} avatarUrl={avatarUrl} size={34} />
             <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.82)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {name}
               </span>
-              {p.identity === hostId && (
+              {hasHand && <span style={{ flexShrink: 0, display: 'flex' }}><RaisedHandIcon size={16} /></span>}
+              {/* Host crown */}
+              {isThisHost && (
                 <svg width="15" height="15" viewBox="0 0 24 24" style={{ flexShrink: 0 }}>
                   <path fill="#FBBF24" fillOpacity="0.9" d="M4 15 L2 5 L9 10 L12 2 L15 10 L22 5 L20 15 Z"/>
                   <rect fill="#FBBF24" x="4" y="16.5" width="16" height="1.8" rx="0.9"/>
+                </svg>
+              )}
+              {/* Co-host silver crown */}
+              {!isThisHost && isThisCoHost && (
+                <svg width="15" height="15" viewBox="0 0 24 24" style={{ flexShrink: 0 }}>
+                  <path fill="rgba(255,255,255,0.75)" d="M4 15 L2 5 L9 10 L12 2 L15 10 L22 5 L20 15 Z"/>
+                  <rect fill="rgba(255,255,255,0.75)" x="4" y="16.5" width="16" height="1.8" rx="0.9"/>
                 </svg>
               )}
             </div>
@@ -1395,7 +1673,11 @@ function ParticipantsPanel({ participants, userInfoMap, localUser, hostId, isHos
                 <MicIcon on={false} size={11} color="#FF5555" />
               </div>
             )}
-            {isHost && !p.isLocal && (
+            {/* Assign/revoke co-host — host only, not on self, not on host */}
+            {isHost && !p.isLocal && !isThisHost && (
+              <CoHostBtn isCoHost={isThisCoHost} name={name} onToggle={() => onToggleCoHost?.(userId)} />
+            )}
+            {canKick && (
               <KickBtn participantId={p.identity} meetingId={meetingId} accessToken={accessToken} name={name} />
             )}
           </div>
@@ -1405,9 +1687,115 @@ function ParticipantsPanel({ participants, userInfoMap, localUser, hostId, isHos
   )
 }
 
+/* ── Co-host button (with confirmation) ─────────────────────────────────── */
+function CoHostBtn({ isCoHost, name, onToggle }) {
+  const [confirm, setConfirm] = useState(false)
+
+  return (
+    <>
+      <button
+        onClick={() => setConfirm(true)}
+        title={isCoHost ? 'Xóa đồng chủ trì' : 'Đặt làm đồng chủ trì'}
+        style={{
+          width: 26, height: 26, borderRadius: 7, flexShrink: 0,
+          background: isCoHost ? 'rgba(15,18,32,0.95)' : 'rgba(255,255,255,0.07)',
+          border: isCoHost ? '1px solid rgba(255,69,69,0.3)' : 'none',
+          color: isCoHost ? '#FF5555' : 'rgba(255,255,255,0.4)',
+          cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          transition: 'all 0.15s',
+        }}
+        onMouseEnter={e => { if (isCoHost) { e.currentTarget.style.background = '#FF3B3B'; e.currentTarget.style.borderColor = '#FF3B3B'; e.currentTarget.style.color = '#fff' } else { e.currentTarget.style.background = 'rgba(255,255,255,0.12)'; e.currentTarget.style.color = '#fff' } }}
+        onMouseLeave={e => { if (isCoHost) { e.currentTarget.style.background = 'rgba(15,18,32,0.95)'; e.currentTarget.style.borderColor = 'rgba(255,69,69,0.3)'; e.currentTarget.style.color = '#FF5555' } else { e.currentTarget.style.background = 'rgba(255,255,255,0.07)'; e.currentTarget.style.color = 'rgba(255,255,255,0.4)' } }}
+      >
+        {isCoHost ? (
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+            <defs>
+              <mask id="crownCutMask">
+                <rect width="24" height="24" fill="white"/>
+                <line x1="2" y1="2" x2="20" y2="20" stroke="black" strokeWidth="3.5" strokeLinecap="round"/>
+              </mask>
+            </defs>
+            <path fill="currentColor" d="M4 15 L2 5 L9 10 L12 2 L15 10 L22 5 L20 15 Z" mask="url(#crownCutMask)"/>
+            <rect fill="currentColor" x="4" y="16.5" width="16" height="1.8" rx="0.9" mask="url(#crownCutMask)"/>
+            <line x1="2" y1="2" x2="20" y2="20" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+        ) : (
+          <svg width="13" height="13" viewBox="0 0 24 24">
+            <path fill="currentColor" d="M4 15 L2 5 L9 10 L12 2 L15 10 L22 5 L20 15 Z"/>
+            <rect fill="currentColor" x="4" y="16.5" width="16" height="1.8" rx="0.9"/>
+          </svg>
+        )}
+      </button>
+
+      {confirm && (
+        <div
+          onClick={() => setConfirm(false)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 200,
+            background: 'rgba(6,8,18,0.82)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontFamily: '"Be Vietnam Pro", sans-serif',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: 320, background: '#0F1220', borderRadius: 18,
+              border: '1px solid rgba(255,255,255,0.08)',
+              boxShadow: '0 24px 60px rgba(0,0,0,0.7)',
+              padding: '24px 24px 20px',
+              animation: 'coHostDropUp 0.18s cubic-bezier(0.22,1,0.36,1)',
+            }}
+          >
+            <div style={{
+              width: 44, height: 44, borderRadius: 12, marginBottom: 16,
+              background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <svg width="22" height="22" viewBox="0 0 24 24">
+                <path fill="rgba(255,255,255,0.8)" d="M4 15 L2 5 L9 10 L12 2 L15 10 L22 5 L20 15 Z"/>
+                <rect fill="rgba(255,255,255,0.8)" x="4" y="16.5" width="16" height="1.8" rx="0.9"/>
+              </svg>
+            </div>
+            <h3 style={{ margin: '0 0 8px', fontSize: 16, fontWeight: 800, color: '#fff', letterSpacing: '-0.3px' }}>
+              {isCoHost ? 'Xóa quyền đồng chủ trì?' : 'Đặt làm đồng chủ trì?'}
+            </h3>
+            <p style={{ margin: '0 0 22px', fontSize: 13, color: 'rgba(255,255,255,0.4)', lineHeight: 1.6 }}>
+              {isCoHost
+                ? <><strong style={{ color: 'rgba(255,255,255,0.7)' }}>{name}</strong> sẽ mất quyền đồng chủ trì.</>
+                : <><strong style={{ color: 'rgba(255,255,255,0.7)' }}>{name}</strong> sẽ có thể duyệt/từ chối thành viên chờ và xóa người tham gia.</>
+              }
+            </p>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                onClick={() => setConfirm(false)}
+                style={{
+                  flex: 1, padding: '10px', borderRadius: 10,
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  background: 'transparent', color: 'rgba(255,255,255,0.55)',
+                  fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                }}
+              >Hủy</button>
+              <button
+                onClick={() => { setConfirm(false); onToggle() }}
+                style={{
+                  flex: 1, padding: '10px', borderRadius: 10, border: 'none',
+                  background: isCoHost ? 'rgba(255,69,69,0.15)' : 'linear-gradient(135deg, rgba(255,255,255,0.15), rgba(255,255,255,0.08))',
+                  color: isCoHost ? '#FF7070' : '#fff',
+                  fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                }}
+              >{isCoHost ? 'Xóa quyền' : 'Xác nhận'}</button>
+            </div>
+          </div>
+          <style>{`@keyframes coHostDropUp { from { opacity:0; transform:translateY(8px) } to { opacity:1; transform:translateY(0) } }`}</style>
+        </div>
+      )}
+    </>
+  )
+}
+
 /* ── Kick button ────────────────────────────────────────────────────────── */
 function KickBtn({ participantId, meetingId, accessToken, name }) {
-  const [hovered, setHovered]     = useState(false)
   const [confirm, setConfirm]     = useState(false)
   const [kicking, setKicking]     = useState(false)
 
@@ -1427,17 +1815,18 @@ function KickBtn({ participantId, meetingId, accessToken, name }) {
         onClick={() => setConfirm(true)}
         disabled={kicking}
         title="Xóa khỏi phòng"
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
         style={{
-          width: 26, height: 26, borderRadius: 7, border: 'none', flexShrink: 0,
-          background: hovered ? '#FF3B3B' : 'rgba(255,69,69,0.08)',
-          color: hovered ? '#fff' : 'rgba(255,100,100,0.5)',
+          width: 26, height: 26, borderRadius: 7, flexShrink: 0,
+          background: 'rgba(15,18,32,0.95)',
+          border: '1px solid rgba(255,69,69,0.3)',
+          color: '#FF5555',
           cursor: kicking ? 'default' : 'pointer',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           transition: 'all 0.15s',
           opacity: kicking ? 0.4 : 1,
         }}
+        onMouseEnter={e => { if (!kicking) { e.currentTarget.style.background = '#FF3B3B'; e.currentTarget.style.borderColor = '#FF3B3B'; e.currentTarget.style.color = '#fff' } }}
+        onMouseLeave={e => { e.currentTarget.style.background = 'rgba(15,18,32,0.95)'; e.currentTarget.style.borderColor = 'rgba(255,69,69,0.3)'; e.currentTarget.style.color = '#FF5555' }}
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
           <path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/>
@@ -1451,7 +1840,7 @@ function KickBtn({ participantId, meetingId, accessToken, name }) {
           onClick={() => setConfirm(false)}
           style={{
             position: 'fixed', inset: 0, zIndex: 200,
-            background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(8px)',
+            background: 'rgba(6,8,18,0.82)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontFamily: '"Be Vietnam Pro", sans-serif',
           }}
@@ -1856,7 +2245,7 @@ function LinkConfirmModal({ url, onConfirm, onCancel }) {
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 999,
-      background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(6px)',
+      background: 'rgba(6,8,18,0.82)',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       fontFamily: '"Be Vietnam Pro", sans-serif',
       animation: 'modalBgIn 0.2s ease',
@@ -1937,7 +2326,14 @@ function CodeBlock({ children }) {
     <div style={{ borderRadius: 10, overflow: 'hidden', background: 'rgba(0,0,0,0.45)', border: '1px solid rgba(255,255,255,0.08)', margin: '4px 0', maxWidth: '100%' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '5px 10px 5px 12px', background: 'rgba(255,255,255,0.04)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
         <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', fontFamily: 'monospace', fontWeight: 600, letterSpacing: '0.05em' }}>{lang || 'code'}</span>
-        <button onClick={copy} style={{ padding: '2px 9px', borderRadius: 5, border: '1px solid rgba(255,255,255,0.1)', background: copied ? 'rgba(52,211,153,0.15)' : 'rgba(255,255,255,0.05)', color: copied ? '#34D399' : 'rgba(255,255,255,0.4)', fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s' }}>
+        <button onClick={copy} style={{
+          minWidth: 54, textAlign: 'center', padding: '2px 9px', borderRadius: 5,
+          border: `1px solid ${copied ? 'rgba(52,211,153,0.3)' : 'rgba(255,255,255,0.1)'}`,
+          background: copied ? 'rgba(52,211,153,0.15)' : 'rgba(255,255,255,0.05)',
+          color: copied ? '#34D399' : 'rgba(255,255,255,0.4)',
+          fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+          transition: 'background 0.3s ease, color 0.3s ease, border-color 0.3s ease',
+        }}>
           {copied ? '✓ Copied' : 'Copy'}
         </button>
       </div>
@@ -1975,14 +2371,47 @@ function MarkdownMessage({ content, mdReady, onLinkClick }) {
   )
 }
 
-function ChatPanel({ messages, onSend, localUserId, userInfoMap = {}, localUser }) {
+const pinHoverBtn = {
+  width: 24, height: 24, borderRadius: 6, padding: 0,
+  border: '1px solid rgba(255,255,255,0.1)',
+  background: 'rgba(12,15,28,0.8)', backdropFilter: 'blur(6px)',
+  color: 'rgba(255,255,255,0.5)',
+  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+  flexShrink: 0, marginTop: 6,
+}
+function PinIcon({ size = 11 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="12" y1="17" x2="12" y2="22"/>
+      <path d="M5 17h14l-1.5-3V8a5.5 5.5 0 0 0-11 0v6L5 17z"/>
+    </svg>
+  )
+}
+
+function ChatPanel({ messages, onSend, localUserId, userInfoMap = {}, localUser, pins = [], isHostOrCohost = false, onPin, onUnpin }) {
   const [text, setText]             = useState('')
   const [pendingLink, setPendingLink] = useState(null)
   const [atBottom, setAtBottom]     = useState(true)
   const [mdReady, setMdReady]       = useState(_md.loaded)
+  const [pinError, setPinError]     = useState('')
   const bottomRef   = useRef(null)
   const listRef     = useRef(null)
   const textareaRef = useRef(null)
+
+  async function handlePin(m) {
+    setPinError('')
+    try {
+      await onPin?.({
+        sender_id: m.sender_id,
+        sender_name: userInfoMap[m.sender_id]?.display_name || m.sender_name,
+        text: m.text,
+        original_ts_ms: m.timestamp_ms,
+      })
+    } catch (err) {
+      setPinError(err.message || 'Không thể ghim tin nhắn')
+      setTimeout(() => setPinError(''), 3500)
+    }
+  }
 
   useEffect(() => { if (!_md.loaded) _loadMd(() => setMdReady(true)) }, [])
 
@@ -2058,7 +2487,18 @@ function ChatPanel({ messages, onSend, localUserId, userInfoMap = {}, localUser 
         .chat-md .katex-display { margin: 8px 0; overflow-x: auto; }
         .chat-md .katex-display .katex { font-size: 1.12em; }
         .chat-stb:hover { background: rgba(0,201,184,0.15) !important; border-color: rgba(0,201,184,0.35) !important; color: #00C9B8 !important; }
+        .chat-msg-row { position: relative; }
+        .chat-msg-row .chat-pin-btn { opacity: 0; transition: opacity 0.15s; }
+        .chat-msg-row:hover .chat-pin-btn { opacity: 1; }
       `}</style>
+
+      <PinnedStrip pins={pins} isHostOrCohost={isHostOrCohost} userInfoMap={userInfoMap} onUnpin={onUnpin} />
+
+      {pinError && (
+        <div style={{ padding: '6px 14px', background: 'rgba(248,113,113,0.1)', color: '#F87171', fontSize: 11, borderBottom: '1px solid rgba(248,113,113,0.2)' }}>
+          {pinError}
+        </div>
+      )}
 
       {/* ── Message list ── */}
       <div ref={listRef} onScroll={onScroll} style={{ flex: 1, overflowY: 'auto', padding: '4px 0 8px', display: 'flex', flexDirection: 'column' }}>
@@ -2081,7 +2521,7 @@ function ChatPanel({ messages, onSend, localUserId, userInfoMap = {}, localUser 
           const color = participantColor(m.sender_id)
 
           return (
-            <div key={m.id} style={{ padding: '0 12px', marginTop: grouped ? 2 : (i === 0 ? 6 : 12), animation: 'chatIn 0.18s cubic-bezier(0.22,1,0.36,1)' }}>
+            <div key={m.id} className="chat-msg-row" style={{ padding: '0 12px', marginTop: grouped ? 2 : (i === 0 ? 6 : 12), animation: 'chatIn 0.18s cubic-bezier(0.22,1,0.36,1)' }}>
 
               {/* Speaker header — same style as Nội dung, others only, first in group */}
               {!mine && !grouped && (
@@ -2096,7 +2536,12 @@ function ChatPanel({ messages, onSend, localUserId, userInfoMap = {}, localUser 
               )}
 
               {/* Bubble row */}
-              <div style={{ display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start' }}>
+              <div style={{ display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start', alignItems: 'flex-start', gap: 6 }}>
+                {mine && isHostOrCohost && (
+                  <button className="chat-pin-btn" onClick={() => handlePin(m)} title="Ghim" style={pinHoverBtn}>
+                    <PinIcon />
+                  </button>
+                )}
                 <div style={{
                   marginLeft: !mine ? 39 : 0,
                   maxWidth: mine ? '80%' : 'calc(100% - 39px)',
@@ -2118,6 +2563,11 @@ function ChatPanel({ messages, onSend, localUserId, userInfoMap = {}, localUser 
                     <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>{fmt(m.timestamp_ms)}</span>
                   )}
                 </div>
+                {!mine && isHostOrCohost && (
+                  <button className="chat-pin-btn" onClick={() => handlePin(m)} title="Ghim" style={pinHoverBtn}>
+                    <PinIcon />
+                  </button>
+                )}
               </div>
 
             </div>
@@ -2919,22 +3369,28 @@ function MicIcon({ on, size = 18, color }) {
   )
 }
 function CamIcon({ on, size = 18 }) {
-  return on ? (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-      <polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/>
+  if (!on) return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <mask id="camOffMask">
+          <rect width="24" height="24" fill="white"/>
+          <line x1="3" y1="3" x2="21" y2="21" stroke="black" strokeWidth="3.5" strokeLinecap="round"/>
+        </mask>
+      </defs>
+      <path d="M21.5 6.1c-.3-.2-.7-.2-1 0l-4.4 3V7c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2v-2.1l4.4 3c.2.1.4.2.6.2.2 0 .3 0 .5-.1.3-.2.5-.5.5-.9V7c0-.4-.2-.7-.5-.9zM14 17H4V7h10v10zm6-1.9l-4-2.7v-.9l4-2.7v6.3z" fill="currentColor" mask="url(#camOffMask)"/>
+      <line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
     </svg>
-  ) : (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-      <line x1="1" y1="1" x2="23" y2="23"/>
-      <path d="M21 21H3a2 2 0 01-2-2V8m3-3h7l2 3h4a2 2 0 012 2v9.34M16 16l7 4V7"/>
+  )
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+      <path d="M21.5 6.1c-.3-.2-.7-.2-1 0l-4.4 3V7c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2v-2.1l4.4 3c.2.1.4.2.6.2.2 0 .3 0 .5-.1.3-.2.5-.5.5-.9V7c0-.4-.2-.7-.5-.9zM14 17H4V7h10v10zm6-1.9l-4-2.7v-.9l4-2.7v6.3z"/>
     </svg>
   )
 }
 function ScreenIcon({ on, size = 18 }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-      <rect x="2" y="3" width="20" height="14" rx="2"/>
-      <line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+      <path fillRule="evenodd" d="M0 3.25A2.25 2.25 0 012.25 1h11.5A2.25 2.25 0 0116 3.25v6.5A2.25 2.25 0 0113.75 12H8.5v1.5H11a.75.75 0 010 1.5H5a.75.75 0 010-1.5h2V12H2.25A2.25 2.25 0 010 9.75v-6.5zm13.75 7.25a.75.75 0 00.75-.75v-6.5a.75.75 0 00-.75-.75H2.25a.75.75 0 00-.75.75v6.5c0 .414.336.75.75.75h11.5z" clipRule="evenodd"/>
     </svg>
   )
 }
@@ -2957,11 +3413,10 @@ function TranscriptIcon({ size = 18 }) {
     </svg>
   )
 }
-function TtsIcon({ size = 18 }) {
+function TtsIcon({ size = 22 }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M2 10h6l10-5v14L8 14H2V10z"/>
-      <path d="M5 14v4"/>
+    <svg width={size} height={size} viewBox="0 0 395 395" fill="currentColor">
+      <path d="M327.661,65.972c-4.927-2.595-10.886-2.245-15.477,0.907c-0.636,0.437-64.915,43.746-183.742,54.258c-1.063,0.094-2.086,0.307-3.07,0.607H80.754c-11.836,0-21.428,9.594-21.428,21.429v67.143c0,11.835,9.592,21.429,21.428,21.429h1.249c12.947,17.473,13.961,36.583,15.02,56.719c0.575,10.946,1.17,22.265,3.823,33.162c1.636,6.721,7.657,11.452,14.574,11.452h26.908c4.392,0,8.563-1.925,11.413-5.267c2.85-3.342,4.092-7.765,3.399-12.101c-0.814-5.092-1.337-10.235-1.718-15.463c0.234-0.07,0.465-0.15,0.689-0.254l4.064-1.894c2.503-1.166,3.587-4.141,2.421-6.643l-8.023-17.223c-0.112-0.241-0.256-0.462-0.403-0.68c-0.532-12.271-1.395-25.206-4.013-38.847c103.982,13.354,161.042,51.242,162.045,51.918c2.542,1.74,5.501,2.621,8.472,2.621c2.392,0,4.792-0.572,6.986-1.727c4.928-2.594,8.013-7.705,8.013-13.273V79.245C335.674,73.677,332.589,68.566,327.661,65.972z M305.674,248.589c-27.776-13.857-79.74-34.761-154.039-43.943v-55.805c74.299-9.182,126.263-30.086,154.039-43.943V248.589z"/>
     </svg>
   )
 }
@@ -2969,6 +3424,45 @@ function ChatIcon({ size = 18 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
       <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+    </svg>
+  )
+}
+
+function PollsIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="20" x2="18" y2="10"/>
+      <line x1="12" y1="20" x2="12" y2="4"/>
+      <line x1="6" y1="20" x2="6" y2="14"/>
+    </svg>
+  )
+}
+
+function NotesIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+      <polyline points="14 2 14 8 20 8"/>
+      <line x1="9" y1="13" x2="15" y2="13"/>
+      <line x1="9" y1="17" x2="15" y2="17"/>
+    </svg>
+  )
+}
+
+function HandIcon({ size = 18, on = false }) {
+  const stroke = on ? '#FBBF24' : 'currentColor'
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg">
+      <path d="M6.9 11.4444V14.2222M6.9 11.4444V4.77778C6.9 3.8573 7.66112 3.11111 8.6 3.11111C9.53888 3.11111 10.3 3.8573 10.3 4.77778M6.9 11.4444C6.9 10.524 6.13888 9.77778 5.2 9.77778C4.26112 9.77778 3.5 10.524 3.5 11.4444V13.6667C3.5 18.269 7.30558 22 12 22C16.6944 22 20.5 18.269 20.5 13.6667V8.11111C20.5 7.19064 19.7389 6.44444 18.8 6.44444C17.8611 6.44444 17.1 7.19064 17.1 8.11111M10.3 4.77778V10.8889M10.3 4.77778V3.66667C10.3 2.74619 11.0611 2 12 2C12.9389 2 13.7 2.74619 13.7 3.66667V4.77778M13.7 4.77778V10.8889M13.7 4.77778C13.7 3.8573 14.4611 3.11111 15.4 3.11111C16.3389 3.11111 17.1 3.8573 17.1 4.77778V8.11111M17.1 8.11111V10.8889" />
+    </svg>
+  )
+}
+
+function RaisedHandIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M8.6 3.11111C7.66112 3.11111 6.9 3.8573 6.9 4.77778L6.9 9.97C6.34 9.65 5.79 9.77778 5.2 9.77778C4.26112 9.77778 3.5 10.524 3.5 11.4444L3.5 13.6667C3.5 18.269 7.30558 22 12 22C16.6944 22 20.5 18.269 20.5 13.6667L20.5 8.11111C20.5 7.19064 19.7389 6.44444 18.8 6.44444C18.13 6.44444 17.55 6.82 17.1 7.3L17.1 4.77778C17.1 3.8573 16.3389 3.11111 15.4 3.11111C14.4611 3.11111 13.7 3.8573 13.7 4.77778L13.7 3.66667C13.7 2.74619 12.9389 2 12 2C11.0611 2 10.3 2.74619 10.3 3.66667L10.3 4.77778C10.3 3.8573 9.53888 3.11111 8.6 3.11111Z" fill="#FBBF24" stroke="none"/>
+      <path d="M6.9 11.4444V14.2222M6.9 11.4444V4.77778C6.9 3.8573 7.66112 3.11111 8.6 3.11111C9.53888 3.11111 10.3 3.8573 10.3 4.77778M6.9 11.4444C6.9 10.524 6.13888 9.77778 5.2 9.77778C4.26112 9.77778 3.5 10.524 3.5 11.4444V13.6667C3.5 18.269 7.30558 22 12 22C16.6944 22 20.5 18.269 20.5 13.6667V8.11111C20.5 7.19064 19.7389 6.44444 18.8 6.44444C17.8611 6.44444 17.1 7.19064 17.1 8.11111M10.3 4.77778V10.8889M10.3 4.77778V3.66667C10.3 2.74619 11.0611 2 12 2C12.9389 2 13.7 2.74619 13.7 3.66667V4.77778M13.7 4.77778V10.8889M13.7 4.77778C13.7 3.8573 14.4611 3.11111 15.4 3.11111C16.3389 3.11111 17.1 3.8573 17.1 4.77778V8.11111M17.1 8.11111V10.8889" stroke="#92400E" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
     </svg>
   )
 }

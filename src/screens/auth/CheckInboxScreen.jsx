@@ -5,8 +5,8 @@ export default function CheckInboxScreen() {
   const isReset = params.get('purpose') === 'reset'
 
   return (
-    <div style={{ width: '100vw', height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#07090F' }}>
-      <div style={{ textAlign: 'center', maxWidth: 400, padding: '0 24px' }}>
+    <div style={{ width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column', overflowY: 'auto', background: '#07090F' }}>
+      <div style={{ textAlign: 'center', maxWidth: 400, padding: '40px 24px', margin: 'auto', width: '100%', boxSizing: 'border-box' }}>
         <div style={{ fontSize: 56, marginBottom: 24 }}>📬</div>
         <h2 style={{ fontSize: 26, fontWeight: 800, color: '#fff', marginBottom: 12 }}>
           Kiểm tra hộp thư của bạn
