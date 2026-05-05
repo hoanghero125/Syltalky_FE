@@ -16,6 +16,9 @@ export const meetingsApi = {
   approve: (meetingId, requestId, token) =>
     api.post(`/meetings/${meetingId}/approve/${requestId}`, {}, token),
 
+  approveAll: (meetingId, token) =>
+    api.post(`/meetings/${meetingId}/approve-all`, {}, token),
+
   deny: (meetingId, requestId, token) =>
     api.post(`/meetings/${meetingId}/deny/${requestId}`, {}, token),
 

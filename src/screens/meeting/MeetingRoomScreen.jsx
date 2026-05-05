@@ -188,6 +188,26 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
   const [waitingRequests, setWaitingRequests] = useState([]) // [{request_id, user_id, display_name, avatar_url}]
   const [waitingRoomEnabled, setWaitingRoomEnabled] = useState(initialWaitingRoom)
 
+  const refreshWaiting = useCallback(async () => {
+    if (!meetingId || !accessToken) return
+    try {
+      const list = await meetingsApi.listWaiting(meetingId, accessToken)
+      if (!Array.isArray(list)) return
+      setWaitingRequests(list.map(r => ({
+        request_id: String(r.id),
+        user_id: String(r.user_id),
+        display_name: r.display_name,
+        avatar_url: r.avatar_url || '',
+      })))
+    } catch {}
+  }, [meetingId, accessToken])
+
+  // Seed the waiting list from the server so host/co-host who rejoin always see
+  // current pending requests (WS only delivers new arrivals, not backlog).
+  useEffect(() => {
+    if (isHost || isCoHost) refreshWaiting()
+  }, [isHost, isCoHost, refreshWaiting])
+
   const micEnabled         = localParticipant?.isMicrophoneEnabled  ?? false
   const camEnabled         = localParticipant?.isCameraEnabled      ?? false
   const screenShare        = localParticipant?.isScreenShareEnabled ?? false
@@ -597,7 +617,7 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
               </button>
             </div>
             <div style={{ flex: 1, overflowY: panel === 'noidung' ? 'hidden' : 'auto', padding: (panel === 'polls' || panel === 'notes') ? 0 : '14px 16px', display: 'flex', flexDirection: 'column' }}>
-              {panel === 'participants' && <ParticipantsPanel participants={participants} userInfoMap={userInfoMap} localUser={localUser} hostId={hostId} isHost={isHost} isCoHost={isCoHost} coHosts={coHosts} onToggleCoHost={toggleCoHost} meetingId={meetingId} accessToken={accessToken} waitingRequests={waitingRequests} raisedHands={raisedHands} onApprove={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} onDeny={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} waitingRoomEnabled={waitingRoomEnabled} onToggleWaitingRoom={async (v) => { setWaitingRoomEnabled(v); try { await meetingsApi.toggleWaitingRoom(meetingId, v, accessToken) } catch { setWaitingRoomEnabled(!v) } }} />}
+              {panel === 'participants' && <ParticipantsPanel participants={participants} userInfoMap={userInfoMap} localUser={localUser} hostId={hostId} isHost={isHost} isCoHost={isCoHost} coHosts={coHosts} onToggleCoHost={toggleCoHost} meetingId={meetingId} accessToken={accessToken} waitingRequests={waitingRequests} raisedHands={raisedHands} onApprove={reqId => { setWaitingRequests(p => p.filter(r => r.request_id !== reqId)); refreshWaiting() }} onDeny={reqId => { setWaitingRequests(p => p.filter(r => r.request_id !== reqId)); refreshWaiting() }} onApproveAll={() => { setWaitingRequests([]); refreshWaiting() }} waitingRoomEnabled={waitingRoomEnabled} onToggleWaitingRoom={async (v) => { setWaitingRoomEnabled(v); try { await meetingsApi.toggleWaitingRoom(meetingId, v, accessToken) } catch { setWaitingRoomEnabled(!v) } }} />}
               {panel === 'noidung'     && <MeetingContentPanel captions={captions} ttsMessages={ttsMessages} replayLog={replayLog} userInfoMap={userInfoMap} localUser={localUser} meetingId={meetingId} accessToken={accessToken} />}
               {panel === 'tts'         && <TtsPanel meetingId={meetingId} accessToken={accessToken} ttsMessages={ttsMessages} captionsWsRef={captionsWsRef} localParticipant={localParticipant} micEnabled={micEnabled} localUserId={localUser?.id} onReplay={msg => setReplayLog(prev => [...prev.slice(-99), { ...msg, id: Date.now() + Math.random(), timestamp_ms: Date.now(), isReplay: true }])} />}
               {panel === 'chat'        && <ChatPanel messages={chatMessages} onSend={sendChat} localUserId={localUser?.id} userInfoMap={userInfoMap} localUser={localUser} pins={extras.pins} isHostOrCohost={isHostOrCohost} onPin={extras.actions.pinMessage} onUnpin={extras.actions.unpinMessage} />}
@@ -621,7 +641,7 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
               </button>
             </div>
             <div style={{ flex: 1, overflowY: panel === 'noidung' ? 'hidden' : 'auto', padding: (panel === 'polls' || panel === 'notes') ? 0 : '14px 16px', display: 'flex', flexDirection: 'column' }}>
-              {panel === 'participants' && <ParticipantsPanel participants={participants} userInfoMap={userInfoMap} localUser={localUser} hostId={hostId} isHost={isHost} isCoHost={isCoHost} coHosts={coHosts} onToggleCoHost={toggleCoHost} meetingId={meetingId} accessToken={accessToken} waitingRequests={waitingRequests} raisedHands={raisedHands} onApprove={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} onDeny={reqId => setWaitingRequests(p => p.filter(r => r.request_id !== reqId))} waitingRoomEnabled={waitingRoomEnabled} onToggleWaitingRoom={async (v) => { setWaitingRoomEnabled(v); try { await meetingsApi.toggleWaitingRoom(meetingId, v, accessToken) } catch { setWaitingRoomEnabled(!v) } }} />}
+              {panel === 'participants' && <ParticipantsPanel participants={participants} userInfoMap={userInfoMap} localUser={localUser} hostId={hostId} isHost={isHost} isCoHost={isCoHost} coHosts={coHosts} onToggleCoHost={toggleCoHost} meetingId={meetingId} accessToken={accessToken} waitingRequests={waitingRequests} raisedHands={raisedHands} onApprove={reqId => { setWaitingRequests(p => p.filter(r => r.request_id !== reqId)); refreshWaiting() }} onDeny={reqId => { setWaitingRequests(p => p.filter(r => r.request_id !== reqId)); refreshWaiting() }} onApproveAll={() => { setWaitingRequests([]); refreshWaiting() }} waitingRoomEnabled={waitingRoomEnabled} onToggleWaitingRoom={async (v) => { setWaitingRoomEnabled(v); try { await meetingsApi.toggleWaitingRoom(meetingId, v, accessToken) } catch { setWaitingRoomEnabled(!v) } }} />}
               {panel === 'noidung'     && <MeetingContentPanel captions={captions} ttsMessages={ttsMessages} replayLog={replayLog} userInfoMap={userInfoMap} localUser={localUser} meetingId={meetingId} accessToken={accessToken} />}
               {panel === 'tts'         && <TtsPanel meetingId={meetingId} accessToken={accessToken} ttsMessages={ttsMessages} captionsWsRef={captionsWsRef} localParticipant={localParticipant} micEnabled={micEnabled} localUserId={localUser?.id} onReplay={msg => setReplayLog(prev => [...prev.slice(-99), { ...msg, id: Date.now() + Math.random(), timestamp_ms: Date.now(), isReplay: true }])} />}
               {panel === 'chat'        && <ChatPanel messages={chatMessages} onSend={sendChat} localUserId={localUser?.id} userInfoMap={userInfoMap} localUser={localUser} pins={extras.pins} isHostOrCohost={isHostOrCohost} onPin={extras.actions.pinMessage} onUnpin={extras.actions.unpinMessage} />}
@@ -1470,8 +1490,9 @@ function MeetTile({ track, localUser, userInfoMap, avatarSize = 120, raisedHands
 }
 
 /* ── Participants panel ─────────────────────────────────────────────────── */
-function ParticipantsPanel({ participants, userInfoMap, localUser, hostId, isHost, isCoHost, coHosts = [], onToggleCoHost, meetingId, accessToken, waitingRequests = [], raisedHands = {}, onApprove, onDeny, waitingRoomEnabled = true, onToggleWaitingRoom }) {
+function ParticipantsPanel({ participants, userInfoMap, localUser, hostId, isHost, isCoHost, coHosts = [], onToggleCoHost, meetingId, accessToken, waitingRequests = [], raisedHands = {}, onApprove, onDeny, onApproveAll, waitingRoomEnabled = true, onToggleWaitingRoom }) {
   const [query, setQuery] = useState('')
+  const [approvingAll, setApprovingAll] = useState(false)
 
   async function handleApprove(req) {
     try {
@@ -1485,6 +1506,16 @@ function ParticipantsPanel({ participants, userInfoMap, localUser, hostId, isHos
       await meetingsApi.deny(meetingId, req.request_id, accessToken)
       onDeny?.(req.request_id)
     } catch {}
+  }
+
+  async function handleApproveAll() {
+    if (approvingAll) return
+    setApprovingAll(true)
+    try {
+      await meetingsApi.approveAll(meetingId, accessToken)
+      onApproveAll?.()
+    } catch {}
+    setApprovingAll(false)
   }
 
   const normalize = (str) =>
@@ -1538,9 +1569,30 @@ function ParticipantsPanel({ participants, userInfoMap, localUser, hostId, isHos
       {/* Waiting room requests — host and co-host */}
       {(isHost || isCoHost) && waitingRequests.length > 0 && (
         <div style={{ marginBottom: 4 }}>
-          <p style={{ margin: '0 0 8px', fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#FF6B8A' }}>
-            Đang chờ duyệt · {waitingRequests.length}
-          </p>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <p style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#FF6B8A' }}>
+              Đang chờ duyệt · {waitingRequests.length}
+            </p>
+            <button
+              onClick={handleApproveAll}
+              disabled={approvingAll}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5,
+                padding: '4px 10px', borderRadius: 8, border: 'none',
+                background: approvingAll ? 'rgba(0,201,184,0.08)' : 'rgba(0,201,184,0.14)',
+                color: approvingAll ? 'rgba(0,201,184,0.4)' : '#00C9B8',
+                fontSize: 11, fontWeight: 700, cursor: approvingAll ? 'default' : 'pointer',
+                transition: 'all 0.15s', whiteSpace: 'nowrap',
+              }}
+              onMouseEnter={e => { if (!approvingAll) e.currentTarget.style.background = 'rgba(0,201,184,0.26)' }}
+              onMouseLeave={e => { if (!approvingAll) e.currentTarget.style.background = 'rgba(0,201,184,0.14)' }}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+              {approvingAll ? 'Đang duyệt…' : 'Chấp nhận tất cả'}
+            </button>
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {waitingRequests.map(req => (
               <div key={req.request_id} style={{
