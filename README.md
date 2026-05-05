@@ -84,8 +84,8 @@ JWT access tokens are refreshed automatically every 25 minutes (5 minutes before
 - **CompleteProfileScreen** — display name + gender after Google OAuth (new users only).
 
 ### Main app (inside AppLayout)
-- **AppLayout** — wraps the main app. Renders `Sidebar` + `<Outlet>`. Connects the notifications WebSocket on mount and shows a toast when a `summary_ready` notification arrives.
-- **Sidebar** — logo, "New Meeting" CTA, "Join with code" CTA, nav (Home, Library), notification bell with unread badge, user row (Settings modal + logout).
+- **AppLayout** — wraps the main app. Renders `Sidebar` + `<Outlet>`.
+- **Sidebar** — logo, "New Meeting" CTA, "Join with code" CTA, nav (Home, Library), user row (Settings modal + logout).
 - **HomeScreen** — live meeting cards (with Rejoin / End) and ended meeting cards in a grid. Empty state for new users.
 - **LibraryScreen** — all past meetings sorted by date, search, AI badge on summarised meetings.
 - **MeetingDetailScreen** — tabs: LLM summary (rendered as Markdown) and full transcript.
@@ -109,7 +109,7 @@ JWT access tokens are refreshed automatically every 25 minutes (5 minutes before
   - Captions overlay: speaker name + live Vietnamese text per video tile.
   - TTS panel: text input + message history with replay, auto-plays incoming audio.
   - Collaborative notes: Tiptap editor synced via Yjs over WebSocket.
-  - Host controls: kick, promote to co-host, waiting room management.
+  - Host controls: kick, promote to co-host, waiting room (approve, deny, approve all).
   - Room-ended / kicked overlays with redirect back to `/home`.
 
 ---
@@ -133,7 +133,7 @@ All API calls read `accessToken` from the store and attach it as `Authorization:
 - Attaches the bearer token.
 - Throws on non-2xx responses with the backend error detail.
 
-Domain-specific modules (`src/api/meetings.js`, `src/api/notifications.js`) wrap individual endpoints.
+Domain-specific modules (`src/api/meetings.js`) wrap individual endpoints.
 
 ---
 
@@ -150,9 +150,8 @@ Syltalky_FE/
 │   │   ├── globals.css             ← CSS reset + custom properties
 │   │   └── theme.js                ← Design tokens (colours, radii, shadows)
 │   ├── api/
-│   │   ├── client.js               ← apiFetch wrapper
-│   │   ├── meetings.js             ← meetings API
-│   │   └── notifications.js        ← notifications API
+│   │   ├── client.js               ← apiFetch wrapper with auto token refresh
+│   │   └── meetings.js             ← meetings API
 │   ├── components/
 │   │   ├── Sidebar.jsx             ← App sidebar
 │   │   ├── UserAvatar.jsx          ← Shared avatar with fallback initials
@@ -161,7 +160,7 @@ Syltalky_FE/
 │   ├── hooks/
 │   │   └── useBreakpoint.js        ← Responsive breakpoint hook
 │   ├── layouts/
-│   │   └── AppLayout.jsx           ← Main app shell + notifications WS
+│   │   └── AppLayout.jsx           ← Main app shell
 │   └── screens/
 │       ├── LandingPage.jsx
 │       ├── HomeScreen.jsx
