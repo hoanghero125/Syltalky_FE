@@ -124,6 +124,8 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
   const [handRaised,   setHandRaised]   = useState(false)
   const [handToasts,   setHandToasts]   = useState([]) // [{id, name, raised}]
   const [coHosts,      setCoHosts]      = useState([]) // array of user IDs
+  // false for host until backend list is fetched; prevents publishing co_hosts:[] on rejoin
+  const [coHostsReady, setCoHostsReady] = useState(!isHost)
   const panelRef   = useRef(null)
   const hostIdRef  = useRef(hostId)
   useEffect(() => { panelRef.current  = panel   }, [panel])
@@ -144,12 +146,26 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
     userInfoMap,
   })
 
-  // Sync co-host list to backend (server-side authoritative for host-only endpoints)
-  // Only the host writes; co-hosts already have their list from metadata.
+  // Fetch co-hosts from backend on host rejoin so we don't publish co_hosts:[] and wipe roles
   useEffect(() => {
     if (!isHost || !meetingId || !accessToken) return
+    meetingsApi.getCoHosts(meetingId, accessToken)
+      .then(data => {
+        const list = Array.isArray(data?.co_hosts) ? data.co_hosts : []
+        coHostsRef.current = list
+        setCoHosts(list)
+      })
+      .catch(() => {})
+      .finally(() => setCoHostsReady(true))
+  }, [isHost, meetingId, accessToken])
+
+  // Sync co-host list to backend (server-side authoritative for host-only endpoints)
+  // Only the host writes; co-hosts already have their list from metadata.
+  // Guard with coHostsReady so a fresh session never wipes the stored list before seeding.
+  useEffect(() => {
+    if (!isHost || !meetingId || !accessToken || !coHostsReady) return
     meetingsApi.setCoHosts(meetingId, coHosts, accessToken).catch(() => {})
-  }, [isHost, meetingId, accessToken, coHosts.join(',')])
+  }, [isHost, meetingId, accessToken, coHostsReady, coHosts.join(',')])
 
   // Track room connection state — broadcasts before fully connected fail with "PC manager is closed" / metadata timeout
   const [roomConnected, setRoomConnected] = useState(room.state === ConnectionState.Connected)
@@ -215,7 +231,7 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
 
   // Publish display_name + avatar URL + hand state (+ co_hosts if host) via LiveKit metadata
   useEffect(() => {
-    if (!localParticipant || !roomConnected) return
+    if (!localParticipant || !roomConnected || !coHostsReady) return
     const metadata = JSON.stringify({
       display_name: localUser?.display_name || '',
       avatar_url: localUser?.avatar_url || '',
@@ -224,7 +240,7 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
     })
     localParticipant.setMetadata(metadata).catch(() => {})
     if (localUser?.display_name) localParticipant.setName(localUser.display_name).catch(() => {})
-  }, [localParticipant, roomConnected, localUser?.display_name, localUser?.avatar_url, handRaised, isHost, coHosts.join(',')])
+  }, [localParticipant, roomConnected, coHostsReady, localUser?.display_name, localUser?.avatar_url, handRaised, isHost, coHosts.join(',')])
 
   // Broadcast name + avatar change via DataChannel so all current participants update immediately
   useEffect(() => {
@@ -282,12 +298,28 @@ function RoomInner({ roomCode, meetingId, hostId, isHost, accessToken, localUser
   }, [room])
 
   // Seed co-hosts from host's metadata on join (late joiner fix)
+  // Also runs on room connected and when the host participant appears, to handle timing races.
   useEffect(() => {
-    const hostParticipant = room.remoteParticipants.get(hostId)
-    if (!hostParticipant) return
-    const meta = parseMetadata(hostParticipant.metadata)
-    if (Array.isArray(meta.co_hosts)) setCoHosts(meta.co_hosts)
-  }, [room, hostId])
+    if (isHost) return // host seeds from backend fetch, not from their own metadata
+    function seedFromHost() {
+      const hostParticipant = room.remoteParticipants.get(hostId)
+      if (!hostParticipant?.metadata) return
+      const meta = parseMetadata(hostParticipant.metadata)
+      if (Array.isArray(meta.co_hosts)) {
+        coHostsRef.current = meta.co_hosts
+        setCoHosts(meta.co_hosts)
+      }
+    }
+    seedFromHost()
+    function onConnected() { seedFromHost() }
+    function onParticipantConnected(p) { if (p.identity === hostId) seedFromHost() }
+    room.on(RoomEvent.Connected, onConnected)
+    room.on(RoomEvent.ParticipantConnected, onParticipantConnected)
+    return () => {
+      room.off(RoomEvent.Connected, onConnected)
+      room.off(RoomEvent.ParticipantConnected, onParticipantConnected)
+    }
+  }, [room, hostId, isHost])
 
   // When a new participant joins, re-broadcast hand state and (if host) co-host list
   useEffect(() => {
@@ -3492,11 +3524,9 @@ function PollsIcon({ size = 18 }) {
 
 function NotesIcon({ size = 18 }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-      <polyline points="14 2 14 8 20 8"/>
-      <line x1="9" y1="13" x2="15" y2="13"/>
-      <line x1="9" y1="17" x2="15" y2="17"/>
+    <svg width={size} height={size} viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path fillRule="evenodd" clipRule="evenodd" d="M13.1976 1.21963L3.11967 11.2976C2.9692 11.448 2.87065 11.6426 2.83836 11.8529L2.13291 16.4474C2.03041 17.115 2.60551 17.6901 3.27309 17.5876L7.86762 16.8822C8.07795 16.8499 8.2725 16.7513 8.42297 16.6009L18.5009 6.52294C18.8914 6.13241 18.8914 5.49925 18.5009 5.10872L14.6118 1.21963C14.2213 0.82911 13.5881 0.829111 13.1976 1.21963ZM4.31657 15.404L4.76548 12.4802L13.9047 3.34095L16.3796 5.81583L7.24036 14.9551L4.31657 15.404Z" fill="currentColor"/>
+      <path d="M11.442 5.24658L12.5027 4.18592L15.7436 7.42683L14.6829 8.48749L11.442 5.24658Z" fill="currentColor"/>
     </svg>
   )
 }
