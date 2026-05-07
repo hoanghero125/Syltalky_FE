@@ -51,6 +51,9 @@ export const meetingsApi = {
   unpinMessage: (meetingId, pinId, token) =>
     api.delete(`/meetings/${meetingId}/pins/${pinId}`, token),
 
+  getCoHosts: (meetingId, token) =>
+    api.get(`/meetings/${meetingId}/co-hosts`, token),
+
   setCoHosts: (meetingId, coHosts, token) =>
     api.post(`/meetings/${meetingId}/co-hosts`, { co_hosts: coHosts }, token),
 
